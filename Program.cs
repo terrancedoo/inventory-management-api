@@ -1,38 +1,19 @@
+using InventoryApi.Data;
 using InventoryApi.Models;
+using Microsoft.EntityFrameworkCore;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
+var connectionString = builder.Configuration
+    .GetConnectionString("InventoryDb")
+    ?? throw new InvalidOperationException(
+        "InventoryDb connection string is missing.");
+
+builder.Services.AddDbContext<InventoryDbContext>(
+    options => options.UseSqlite(connectionString));
+
 var app = builder.Build();
-
-var products = new List<Product>
-{
-    new Product
-    {
-        Id = 1,
-        Name = "Demo Champagne",
-        Category = "Champagne",
-        PurchaseCost = 75.00m,
-        SellingPrice = 180.00m
-    },
-
-    new Product
-    {
-        Id = 2,
-        Name = "Demo Whisky",
-        Category = "Whisky",
-        PurchaseCost = 50.00m,
-        SellingPrice = 120.00m
-    },
-
-    new Product
-    {
-        Id = 3,
-        Name = "Demo Sake",
-        Category = "Sake",
-        PurchaseCost = 35.00m,
-        SellingPrice = 90.00m
-    }
-};
 
 // Endpoint 1: Application information
 app.MapGet("/", () =>
@@ -65,10 +46,24 @@ app.MapGet("/about", () =>
     });
 });
 
-// Endpoint 4: Get a specific product by ID
-app.MapGet("/products/{id:int}", (int id) =>
+// Endpoint 4: Get all products
+app.MapGet("/products", async (InventoryDbContext db) =>
 {
-    Product? product = products.FirstOrDefault(p => p.Id == id);
+    var products = await db.Products
+        .AsNoTracking()
+        .OrderBy(p => p.Id)
+        .ToListAsync();
+
+    return Results.Ok(products);
+});
+
+// Endpoint 5: Get a specific product by ID
+app.MapGet("/products/{id:int}",
+    async (int id, InventoryDbContext db) =>
+{
+    var product = await db.Products
+        .AsNoTracking()
+        .FirstOrDefaultAsync(p => p.Id == id);
 
     if (product is null)
     {
@@ -81,13 +76,13 @@ app.MapGet("/products/{id:int}", (int id) =>
     return Results.Ok(product);
 });
 
-app.MapPost("/products", (CreateProductRequest request) =>
+app.MapPost("/products",
+    async (CreateProductRequest request, InventoryDbContext db) =>
 {
-    // Clean incoming text
     string name = request.Name?.Trim() ?? "";
     string category = request.Category?.Trim() ?? "";
 
-    // Validate the product name
+    // Validate product name
     if (string.IsNullOrWhiteSpace(name))
     {
         return Results.BadRequest(new
@@ -96,7 +91,15 @@ app.MapPost("/products", (CreateProductRequest request) =>
         });
     }
 
-    // Validate the category
+    if (name.Length > 120)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Product name cannot exceed 120 characters."
+        });
+    }
+
+    // Validate category
     if (string.IsNullOrWhiteSpace(category))
     {
         return Results.BadRequest(new
@@ -105,7 +108,15 @@ app.MapPost("/products", (CreateProductRequest request) =>
         });
     }
 
-    // Validate the purchase cost
+    if (category.Length > 60)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Product category cannot exceed 60 characters."
+        });
+    }
+
+    // Validate purchase cost
     if (request.PurchaseCost is null ||
         request.PurchaseCost < 0)
     {
@@ -115,7 +126,7 @@ app.MapPost("/products", (CreateProductRequest request) =>
         });
     }
 
-    // Validate the selling price
+    // Validate selling price
     if (request.SellingPrice is null ||
         request.SellingPrice <= 0)
     {
@@ -125,25 +136,22 @@ app.MapPost("/products", (CreateProductRequest request) =>
         });
     }
 
-    // Generate a unique ID for the current list
-    int nextId = products.Count == 0
-        ? 1
-        : products.Max(p => p.Id) + 1;
-
-    // Create the new product
+    // Create new product
     var product = new Product
     {
-        Id = nextId,
         Name = name,
         Category = category,
         PurchaseCost = request.PurchaseCost.Value,
         SellingPrice = request.SellingPrice.Value
     };
 
-    // Store the product in memory
-    products.Add(product);
+    // Add product to database
+    db.Products.Add(product);
 
-    // Return HTTP 201 Created
+    // Save changes to SQLite
+    await db.SaveChangesAsync();
+
+    // Return created product
     return Results.Created($"/products/{product.Id}", product);
 });
 

@@ -60,6 +60,16 @@ Each product contains:
 - PurchaseCost
 - SellingPrice
 
+## Database
+
+The application uses SQLite with Entity Framework Core 10.
+
+Product records are stored persistently in a local
+SQLite database.
+
+Database schema changes are managed with EF Core
+migrations.
+
 ## Example POST Request
 
 Endpoint: POST /products
