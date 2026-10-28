@@ -1,80 +1,58 @@
 # Inventory Management API
 
-A C# ASP.NET Core portfolio project for managing
-products, inventory, sales, and business reporting.
+A portfolio REST API built with **C#**, **ASP.NET Core (.NET 10)**, **Entity Framework Core**, and **SQLite**.
 
-## Project Overview
-
-This application demonstrates backend development
-using C#, ASP.NET Core, and REST APIs.
-
-The project is inspired by real-world inventory
-management workflows and uses fictional data.
+This project demonstrates backend development, database persistence, CRUD operations, input validation, asynchronous programming, and Git-based version control. It is inspired by inventory and sales workflows, using fictional demonstration data.
 
 ## Technology Stack
 
-- C#
-- ASP.NET Core (.NET 10)
-- REST APIs
+- C# and ASP.NET Core Minimal APIs (.NET 10)
+- Entity Framework Core 10 with SQLite
+- LINQ and asynchronous database operations
 - Git and GitHub
-- SQLite (planned)
-- JavaScript frontend (planned)
+- PowerShell for manual API testing
+
+**Planned:** JavaScript frontend, automated tests, inventory movements, sales, and reporting.
 
 ## Implemented Features
 
-### Day 1 - API Foundation
-
-- Created ASP.NET Core Minimal API
-- Added application information endpoint
-- Added health check endpoint
-- Added developer information endpoint
-
-### Day 2 - Product Management
-
-- Created a Product class
-- Implemented in-memory product storage
-- Retrieve all products
-- Retrieve a product by ID
-- Create new products using POST requests
-- Validate incoming product information
+- Retrieve all products or a product by ID
+- Create products with server-generated IDs
+- Update product information
+- Delete products (permanent deletion for now)
+- Validate names, categories, purchase costs, and selling prices
 - Return appropriate HTTP status codes
+- Persist products in a local SQLite database
+- Manage database schema with EF Core migrations
 
 ## API Endpoints
 
-| Method | Endpoint       | Description             |
-| ------ | -------------- | ----------------------- |
-| GET    | /              | Application information |
-| GET    | /health        | Health check            |
-| GET    | /about         | Developer information   |
-| GET    | /products      | Retrieve all products   |
-| GET    | /products/{id} | Retrieve product by ID  |
-| POST   | /products      | Create a new product    |
+| Method | Route            | Description                     | Success        |
+| ------ | ---------------- | ------------------------------- | -------------- |
+| GET    | `/`              | Application information         | 200 OK         |
+| GET    | `/health`        | API health check                | 200 OK         |
+| GET    | `/about`         | Developer information           | 200 OK         |
+| GET    | `/products`      | List products                   | 200 OK         |
+| GET    | `/products/{id}` | Get product by ID               | 200 OK         |
+| POST   | `/products`      | Create product                  | 201 Created    |
+| PUT    | `/products/{id}` | Replace editable product fields | 204 No Content |
+| DELETE | `/products/{id}` | Permanently delete product      | 204 No Content |
 
-## Product Data Structure
+Invalid product data returns **400 Bad Request**. Requests for products that do not exist return **404 Not Found**.
 
-Each product contains:
+## Product Model
 
-- Id
-- Name
-- Category
-- PurchaseCost
-- SellingPrice
+| Property       | C# Type   | Description                     |
+| -------------- | --------- | ------------------------------- |
+| `Id`           | `int`     | Database-generated product ID   |
+| `Name`         | `string`  | Product name (1–120 characters) |
+| `Category`     | `string`  | Category (1–60 characters)      |
+| `PurchaseCost` | `decimal` | Zero or greater                 |
+| `SellingPrice` | `decimal` | Greater than zero               |
 
-## Database
+### Example: Create a Product
 
-The application uses SQLite with Entity Framework Core 10.
-
-Product records are stored persistently in a local
-SQLite database.
-
-Database schema changes are managed with EF Core
-migrations.
-
-## Example POST Request
-
-Endpoint: POST /products
-
-Request body:
+**Request:** `POST /products`
 
 ```json
 {
@@ -85,65 +63,116 @@ Request body:
 }
 ```
 
-## Validation Rules
+**Response:** `201 Created`, with the created product and a `Location` header.
 
-- Product name must not be empty.
-- Product category must not be empty.
-- Purchase cost cannot be negative.
-- Selling price must be greater than zero.
+### Example: Update a Product
 
-## HTTP Response Codes
+**Request:** `PUT /products/1`
 
-- 200 OK - Successful GET request
-- 201 Created - Product created successfully
-- 400 Bad Request - Invalid product data
-- 404 Not Found - Product does not exist
+```json
+{
+  "name": "Demo Premium Tequila",
+  "category": "Tequila",
+  "purchaseCost": 60.0,
+  "sellingPrice": 150.0
+}
+```
 
-## Running the Application
+**Response:** `204 No Content`. All four editable fields are required.
 
-Requirements:
+### Example: Delete a Product
+
+**Request:** `DELETE /products/1`
+
+**Response:** `204 No Content`. The product is removed permanently. Use only test records until soft deletion is implemented.
+
+## Getting Started
+
+### Requirements
 
 - .NET 10 SDK
+- Git
+- `dotnet-ef` CLI compatible with EF Core 10
 
-Run:
+### Clone and Restore
+
+```powershell
+git clone https://github.com/terrancedoo/inventory-management-api.git
+cd inventory-management-api
+dotnet restore
+```
+
+### Create the Local Database
+
+```powershell
+dotnet ef database update
+```
+
+This applies the committed migrations and creates the local SQLite database. The database file is excluded from Git.
+
+### Run the API
 
 ```powershell
 dotnet run --urls http://localhost:5050
 ```
 
-Example URLs:
+Test these URLs in a browser:
 
-- http://localhost:5050/
-- http://localhost:5050/health
-- http://localhost:5050/products
-- http://localhost:5050/products/1
+- `http://localhost:5050/health`
+- `http://localhost:5050/products`
 
-## Current Limitations
+A new database has no products until you create them through `POST /products`.
 
-Product data is stored in memory.
+## Project Structure
 
-New products are lost when the application restarts.
+```text
+InventoryApi/
+├── Data/
+│   └── InventoryDbContext.cs
+├── Models/
+│   ├── Product.cs
+│   ├── CreateProductRequest.cs
+│   └── UpdateProductRequest.cs
+├── Migrations/
+│   └── (EF Core migration and model snapshot files)
+├── Program.cs
+├── InventoryApi.csproj
+├── appsettings.json
+├── .gitignore
+└── README.md
+```
 
-Database persistence will be implemented using SQLite.
+## Progress
+
+| Day | Milestone                                          |
+| --- | -------------------------------------------------- |
+| 1   | Project setup and basic API endpoints              |
+| 2   | Product models, GET and POST endpoints, validation |
+| 3   | SQLite, Entity Framework Core, and migrations      |
+| 4   | Product update and delete endpoints                |
 
 ## Planned Features
 
-- SQLite database integration
-- Inventory location management
-- Stock movement records
-- Sales management
-- Historical monthly reporting
-- Automated unit tests
+- Inventory locations: Store, Locker, Office, Wine Chiller
+- Stock receipts, deductions, and transfers with movement history
+- Prevention of negative stock balances
+- Sales transactions and product margin calculations
+- Previous completed month's historical reporting (no real-time graphs)
+- 3 AM business-day cutoff for reports
 - JavaScript frontend
+- Automated unit and integration tests
+- Product archiving instead of permanent deletion
+- Authentication and authorisation
 
-## Reporting Design
+## Current Limitations
 
-Analytics will display data from the previous
-completed month rather than real-time graphs.
+- Products can be managed through the API, but there is no graphical frontend yet.
+- Inventory quantities, stock movements, and sales are not yet implemented.
+- DELETE permanently removes records; historical references will require a different strategy.
+- The API does not currently implement authentication or authorisation.
+- The SQLite database is intended for local development.
+- Automated tests are planned; current endpoint testing is manual.
 
-Sales reporting will support a 3 AM business-day cutoff.
+## Author
 
-## Development Progress
-
-- Day 1: API foundation completed
-- Day 2: Product management API completed
+GitHub: [terrancedoo](https://github.com/terrancedoo)

@@ -155,4 +155,95 @@ app.MapPost("/products",
     return Results.Created($"/products/{product.Id}", product);
 });
 
+app.MapPut("/products/{id:int}",
+    async (int id, UpdateProductRequest request, InventoryDbContext db) =>
+{
+    // Step 1: Find the existing product
+    var product = await db.Products.FindAsync(id);
+
+    if (product is null)
+    {
+        return Results.NotFound(new
+        {
+            Message = $"Product with ID {id} was not found."
+        });
+    }
+
+    // Step 2: Clean the incoming strings
+    string name = request.Name?.Trim() ?? "";
+    string category = request.Category?.Trim() ?? "";
+
+    // Step 3: Validate product name
+    if (string.IsNullOrWhiteSpace(name) || name.Length > 120)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Product name must contain 1 to 120 characters."
+        });
+    }
+
+    // Step 4: Validate category
+    if (string.IsNullOrWhiteSpace(category) || category.Length > 60)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Category must contain 1 to 60 characters."
+        });
+    }
+
+    // Step 5: Validate prices
+    if (request.PurchaseCost is null || request.PurchaseCost < 0)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Purchase cost must be zero or greater."
+        });
+    }
+
+    if (request.SellingPrice is null || request.SellingPrice <= 0)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Selling price must be greater than zero."
+        });
+    }
+
+    // Step 6: Update the existing product
+    product.Name = name;
+    product.Category = category;
+    product.PurchaseCost = request.PurchaseCost.Value;
+    product.SellingPrice = request.SellingPrice.Value;
+
+    // Step 7: Save changes to SQLite
+    await db.SaveChangesAsync();
+
+    // Step 8: Return success with no response body
+    return Results.NoContent();
+});
+
+app.MapDelete("/products/{id:int}",
+    async (int id, InventoryDbContext db) =>
+{
+    // Find the product
+    var product = await db.Products.FindAsync(id);
+
+    // Product does not exist
+    if (product is null)
+    {
+        return Results.NotFound(new
+        {
+            Message = $"Product with ID {id} was not found."
+        });
+    }
+
+    // Mark the product for deletion
+    db.Products.Remove(product);
+
+    // Delete from SQLite
+    await db.SaveChangesAsync();
+
+    // Return HTTP 204
+    return Results.NoContent();
+});
+
 app.Run();
