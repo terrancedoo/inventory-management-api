@@ -25,18 +25,55 @@ This project demonstrates backend development, database persistence, CRUD operat
 - Persist products in a local SQLite database
 - Manage database schema with EF Core migrations
 
+### Inventory Management
+
+- Four inventory locations: Store, Locker, Office and Wine Chiller
+- Record stock receipts from external sources
+- Transfer stock between locations
+- Record outgoing stock issues
+- Maintain a timestamped stock movement history
+- Calculate stock balances from recorded movements
+- Calculate usable stock separately from total stock
+- Validate products, locations and movement quantities
+- Reject movements that exceed available stock
+- Prevent deletion of products with stock movement history
+
+**Usable Stock:** Store + Wine Chiller
+
+**Total Stock:** Store + Locker + Office + Wine Chiller
+
+### Stock Movement Rules
+
+Stock movements use positive quantities and nullable source
+and destination locations:
+
+- Receipt: source is null, destination is a stock location
+- Transfer: both source and destination are stock locations
+- Issue: source is a stock location, destination is null
+
+Both locations cannot be null, and transfers to the same
+location are rejected.
+
+Current stock validation prevents negative balances during
+sequential requests. Concurrency protection is planned.
+
 ## API Endpoints
 
-| Method | Route            | Description                     | Success        |
-| ------ | ---------------- | ------------------------------- | -------------- |
-| GET    | `/`              | Application information         | 200 OK         |
-| GET    | `/health`        | API health check                | 200 OK         |
-| GET    | `/about`         | Developer information           | 200 OK         |
-| GET    | `/products`      | List products                   | 200 OK         |
-| GET    | `/products/{id}` | Get product by ID               | 200 OK         |
-| POST   | `/products`      | Create product                  | 201 Created    |
-| PUT    | `/products/{id}` | Replace editable product fields | 204 No Content |
-| DELETE | `/products/{id}` | Permanently delete product      | 204 No Content |
+| Method | Route                   | Description                         | Success        |
+| ------ | ----------------------- | ----------------------------------- | -------------- |
+| GET    | `/`                     | Application information             | 200 OK         |
+| GET    | `/health`               | API health check                    | 200 OK         |
+| GET    | `/about`                | Developer information               | 200 OK         |
+| GET    | `/products`             | List products                       | 200 OK         |
+| GET    | `/products/{id}`        | Get product by ID                   | 200 OK         |
+| POST   | `/products`             | Create product                      | 201 Created    |
+| PUT    | `/products/{id}`        | Replace editable product fields     | 204 No Content |
+| DELETE | `/products/{id}`        | Permanently delete product          | 204 No Content |
+| GET    | `/locations`            | Retrieve inventory locations        |
+| GET    | `/products/{id}/stock`  | Retrieve product stock balances     |
+| GET    | `/stock-movements`      | Retrieve stock movement history     |
+| GET    | `/stock-movements/{id}` | Retrieve a movement by ID           |
+| POST   | `/stock-movements`      | Record a receipt, transfer or issue |
 
 Invalid product data returns **400 Bad Request**. Requests for products that do not exist return **404 Not Found**.
 
@@ -132,15 +169,19 @@ InventoryApi/
 ├── Models/
 │   ├── Product.cs
 │   ├── CreateProductRequest.cs
-│   └── UpdateProductRequest.cs
+│   ├── UpdateProductRequest.cs
+│   ├── StockLocation.cs
+│   ├── StockMovement.cs
+│   └── CreateStockMovementRequest.cs
 ├── Migrations/
-│   └── (EF Core migration and model snapshot files)
+│   ├── (InitialCreate migration files)
+│   ├── (AddStockLocationsAndMovements migration files)
+│   └── InventoryDbContextModelSnapshot.cs
 ├── Program.cs
 ├── InventoryApi.csproj
 ├── appsettings.json
 ├── .gitignore
 └── README.md
-```
 
 ## Progress
 
@@ -150,6 +191,7 @@ InventoryApi/
 | 2   | Product models, GET and POST endpoints, validation |
 | 3   | SQLite, Entity Framework Core, and migrations      |
 | 4   | Product update and delete endpoints                |
+| Day 5 | Inventory locations, stock movement history and stock balances | Completed |
 
 ## Planned Features
 
@@ -176,3 +218,4 @@ InventoryApi/
 ## Author
 
 GitHub: [terrancedoo](https://github.com/terrancedoo)
+```
