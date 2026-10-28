@@ -15,4 +15,11 @@ public class StockMovement
     public DateTime OccurredAtUtc { get; set; }
 
     public string? Reference { get; set; }
+
+    // The original movement being reversed.
+    // Null means this is a normal movement.
+    public int? ReversesMovementId { get; set; }
+
+    // Explanation of why the reversal was performed.
+    public string? ReversalReason { get; set; }
 }

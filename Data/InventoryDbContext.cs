@@ -109,6 +109,20 @@ public class InventoryDbContext : DbContext
                 m.ProductId,
                 m.OccurredAtUtc
             });
+            // Limit reversal reasons to 200 characters.
+            entity.Property(m => m.ReversalReason)
+                .HasMaxLength(200);
+
+            // Each reversal references its original movement.
+            entity.HasOne<StockMovement>()
+                .WithMany()
+                .HasForeignKey(m => m.ReversesMovementId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // A movement can be reversed at most once.
+            entity.HasIndex(m => m.ReversesMovementId)
+                .IsUnique();
+
         });
     }
 }

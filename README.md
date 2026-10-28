@@ -59,21 +59,22 @@ sequential requests. Concurrency protection is planned.
 
 ## API Endpoints
 
-| Method | Route                   | Description                         | Success        |
-| ------ | ----------------------- | ----------------------------------- | -------------- |
-| GET    | `/`                     | Application information             | 200 OK         |
-| GET    | `/health`               | API health check                    | 200 OK         |
-| GET    | `/about`                | Developer information               | 200 OK         |
-| GET    | `/products`             | List products                       | 200 OK         |
-| GET    | `/products/{id}`        | Get product by ID                   | 200 OK         |
-| POST   | `/products`             | Create product                      | 201 Created    |
-| PUT    | `/products/{id}`        | Replace editable product fields     | 204 No Content |
-| DELETE | `/products/{id}`        | Permanently delete product          | 204 No Content |
-| GET    | `/locations`            | Retrieve inventory locations        |
-| GET    | `/products/{id}/stock`  | Retrieve product stock balances     |
-| GET    | `/stock-movements`      | Retrieve stock movement history     |
-| GET    | `/stock-movements/{id}` | Retrieve a movement by ID           |
-| POST   | `/stock-movements`      | Record a receipt, transfer or issue |
+| Method | Route                           | Description                                 | Success        |
+| ------ | ------------------------------- | ------------------------------------------- | -------------- |
+| GET    | `/`                             | Application information                     | 200 OK         |
+| GET    | `/health`                       | API health check                            | 200 OK         |
+| GET    | `/about`                        | Developer information                       | 200 OK         |
+| GET    | `/products`                     | List products                               | 200 OK         |
+| GET    | `/products/{id}`                | Get product by ID                           | 200 OK         |
+| POST   | `/products`                     | Create product                              | 201 Created    |
+| PUT    | `/products/{id}`                | Replace editable product fields             | 204 No Content |
+| DELETE | `/products/{id}`                | Permanently delete product                  | 204 No Content |
+| GET    | `/locations`                    | Retrieve inventory locations                |
+| GET    | `/products/{id}/stock`          | Retrieve product stock balances             |
+| GET    | `/stock-movements`              | Retrieve stock movement history             |
+| GET    | `/stock-movements/{id}`         | Retrieve a movement by ID                   |
+| POST   | `/stock-movements`              | Record a receipt, transfer or issue         |
+| POST   | `/stock-movements/{id}/reverse` | Reverse a movement while preserving history |
 
 Invalid product data returns **400 Bad Request**. Requests for products that do not exist return **404 Not Found**.
 
@@ -185,13 +186,16 @@ InventoryApi/
 
 ## Progress
 
-| Day | Milestone                                          |
-| --- | -------------------------------------------------- |
-| 1   | Project setup and basic API endpoints              |
-| 2   | Product models, GET and POST endpoints, validation |
-| 3   | SQLite, Entity Framework Core, and migrations      |
-| 4   | Product update and delete endpoints                |
-| Day 5 | Inventory locations, stock movement history and stock balances | Completed |
+## Development Progress
+
+| Day | Milestone | Status |
+| --- | --- | --- |
+| Day 1 | Project setup and basic API endpoints | Completed |
+| | Product models, GET and POST endpoints, validation | Completed |
+| | SQLite, Entity Framework Core, and migrations | Completed |
+| | Product update and delete endpoints | Completed |
+| | Inventory locations, stock movement history and stock balances | Completed |
+| | Automated integration tests, transaction safety and movement reversals | Completed |
 
 ## Planned Features
 

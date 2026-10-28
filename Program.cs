@@ -1,7 +1,8 @@
 using InventoryApi.Data;
 using InventoryApi.Models;
 using Microsoft.EntityFrameworkCore;
-
+using System.Data;
+using Microsoft.Data.Sqlite;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -224,10 +225,9 @@ app.MapPut("/products/{id:int}",
 app.MapDelete("/products/{id:int}",
     async (int id, InventoryDbContext db) =>
 {
-    // Find the product
+    // 1. Find the product.
     var product = await db.Products.FindAsync(id);
 
-    // Product does not exist
     if (product is null)
     {
         return Results.NotFound(new
@@ -236,16 +236,25 @@ app.MapDelete("/products/{id:int}",
         });
     }
 
-    // Mark the product for deletion
+    // 2. Check for stock movement history.
+    bool hasMovementHistory = await db.StockMovements
+        .AnyAsync(m => m.ProductId == id);
+
+    if (hasMovementHistory)
+    {
+        return Results.Conflict(new
+        {
+            Message = "Cannot delete a product with stock movement history."
+        });
+    }
+
+    // 3. Only delete products without movement history.
     db.Products.Remove(product);
 
-    // Delete from SQLite
     await db.SaveChangesAsync();
 
-    // Return HTTP 204
     return Results.NoContent();
 });
-
 // Endpoint 6: Get all stock locations
 app.MapGet("/locations",
     async (InventoryDbContext db) =>
@@ -329,7 +338,7 @@ app.MapPost("/stock-movements",
     async (CreateStockMovementRequest request,
            InventoryDbContext db) =>
 {
-    // 1. Validate the product and quantity
+    // 1. Validate information that does not require database access.
     if (request.ProductId <= 0)
     {
         return Results.BadRequest(new
@@ -346,18 +355,6 @@ app.MapPost("/stock-movements",
         });
     }
 
-    bool productExists = await db.Products
-        .AnyAsync(p => p.Id == request.ProductId);
-
-    if (!productExists)
-    {
-        return Results.BadRequest(new
-        {
-            Message = "Product does not exist."
-        });
-    }
-
-    // 2. Validate the movement direction
     if (request.FromLocationId is null &&
         request.ToLocationId is null)
     {
@@ -376,7 +373,6 @@ app.MapPost("/stock-movements",
         });
     }
 
-    // 3. Validate optional reference
     string? reference = request.Reference?.Trim();
 
     if (reference?.Length > 100)
@@ -387,81 +383,124 @@ app.MapPost("/stock-movements",
         });
     }
 
-    // 4. Validate source location
-    if (request.FromLocationId is int fromId)
+    try
     {
-        bool sourceExists = await db.StockLocations
-            .AnyAsync(l => l.Id == fromId);
+        // 2. Begin a serializable transaction BEFORE reading stock.
+        await using var transaction =
+            await db.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable);
 
-        if (!sourceExists)
+        // 3. Check whether the product exists.
+        bool productExists = await db.Products
+            .AnyAsync(p => p.Id == request.ProductId);
+
+        if (!productExists)
         {
             return Results.BadRequest(new
             {
-                Message = "Source location does not exist."
+                Message = "Product does not exist."
             });
         }
 
-        // Retrieve stock history for the source
-        var movements = await db.StockMovements
-            .AsNoTracking()
-            .Where(m =>
-                m.ProductId == request.ProductId &&
-                (m.FromLocationId == fromId ||
-                 m.ToLocationId == fromId))
-            .ToListAsync();
-
-        // Calculate stock available at the source
-        int available = movements.Sum(m =>
-            (m.ToLocationId == fromId ? m.Quantity : 0)
-            -
-            (m.FromLocationId == fromId ? m.Quantity : 0));
-
-        // Prevent negative stock
-        if (available < request.Quantity)
+        // 4. Validate the source and check its available stock.
+        if (request.FromLocationId is int fromId)
         {
-            return Results.BadRequest(new
+            bool sourceExists = await db.StockLocations
+                .AnyAsync(l => l.Id == fromId);
+
+            if (!sourceExists)
             {
-                Message = "Insufficient stock.",
-                Available = available,
-                Requested = request.Quantity
-            });
+                return Results.BadRequest(new
+                {
+                    Message = "Source location does not exist."
+                });
+            }
+
+            var sourceMovements = await db.StockMovements
+                .AsNoTracking()
+                .Where(m =>
+                    m.ProductId == request.ProductId &&
+                    (m.FromLocationId == fromId ||
+                     m.ToLocationId == fromId))
+                .ToListAsync();
+
+            int incoming = sourceMovements
+                .Where(m => m.ToLocationId == fromId)
+                .Sum(m => m.Quantity);
+
+            int outgoing = sourceMovements
+                .Where(m => m.FromLocationId == fromId)
+                .Sum(m => m.Quantity);
+
+            int available = incoming - outgoing;
+
+            if (available < request.Quantity)
+            {
+                return Results.BadRequest(new
+                {
+                    Message = "Insufficient stock.",
+                    Available = available,
+                    Requested = request.Quantity
+                });
+            }
         }
+
+        // 5. Validate the destination location.
+        if (request.ToLocationId is int toId)
+        {
+            bool destinationExists = await db.StockLocations
+                .AnyAsync(l => l.Id == toId);
+
+            if (!destinationExists)
+            {
+                return Results.BadRequest(new
+                {
+                    Message = "Destination location does not exist."
+                });
+            }
+        }
+
+        // 6. Create a new movement record.
+        var movement = new StockMovement
+        {
+            ProductId = request.ProductId,
+            FromLocationId = request.FromLocationId,
+            ToLocationId = request.ToLocationId,
+            Quantity = request.Quantity,
+            Reference = reference,
+            OccurredAtUtc = DateTime.UtcNow
+        };
+
+        db.StockMovements.Add(movement);
+
+        // 7. Save while the transaction is active.
+        await db.SaveChangesAsync();
+
+        // 8. Commit the complete operation.
+        await transaction.CommitAsync();
+
+        return Results.Created(
+            $"/stock-movements/{movement.Id}",
+            movement);
     }
-
-    // 5. Validate destination location
-    if (request.ToLocationId is int toId)
+    catch (SqliteException ex)
+        when (ex.SqliteErrorCode is 5 or 6)
     {
-        bool destinationExists = await db.StockLocations
-            .AnyAsync(l => l.Id == toId);
-
-        if (!destinationExists)
+        // SQLite was busy or locked beyond its timeout.
+        return Results.Json(new
         {
-            return Results.BadRequest(new
-            {
-                Message = "Destination location does not exist."
-            });
-        }
+            Message = "Inventory database is temporarily busy. Check movement history before retrying."
+        }, statusCode: 503);
     }
-
-    // 6. Create the stock movement
-    var movement = new StockMovement
+    catch (DbUpdateException ex)
+        when (ex.InnerException is SqliteException sqlite &&
+              sqlite.SqliteErrorCode is 5 or 6)
     {
-        ProductId = request.ProductId,
-        FromLocationId = request.FromLocationId,
-        ToLocationId = request.ToLocationId,
-        Quantity = request.Quantity,
-        Reference = reference,
-        OccurredAtUtc = DateTime.UtcNow
-    };
-
-    // 7. Save to SQLite
-    db.StockMovements.Add(movement);
-    await db.SaveChangesAsync();
-
-    // 8. Return HTTP 201 Created
-    return Results.Created(
-        $"/stock-movements/{movement.Id}",
-        movement);
+        return Results.Json(new
+        {
+            Message = "Inventory database is temporarily busy. Check movement history before retrying."
+        }, statusCode: 503);
+    }
 });
 
 // Endpoint 9: Get a specific stock movement by ID
@@ -504,4 +543,153 @@ app.MapGet("/stock-movements",
     return Results.Ok(movements);
 });
 
+// Endpoint 11: Reverse a stock movement
+app.MapPost("/stock-movements/{id:int}/reverse",
+    async (int id,
+           ReverseStockMovementRequest request,
+           InventoryDbContext db) =>
+{
+    // 1. Validate the correction reason.
+    string reason = request.Reason?.Trim() ?? "";
+
+    if (reason.Length < 1 || reason.Length > 200)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Reason must contain 1 to 200 characters."
+        });
+    }
+
+    try
+    {
+        // 2. Protect the entire reversal operation.
+        await using var transaction =
+            await db.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable);
+
+        // 3. Find the original movement.
+        var original = await db.StockMovements
+            .AsNoTracking()
+            .FirstOrDefaultAsync(m => m.Id == id);
+
+        if (original is null)
+        {
+            return Results.NotFound(new
+            {
+                Message = $"Movement {id} was not found."
+            });
+        }
+
+        // 4. Do not allow reversing a reversal.
+        if (original.ReversesMovementId is not null)
+        {
+            return Results.Conflict(new
+            {
+                Message = "A reversal cannot be reversed."
+            });
+        }
+
+        // 5. Check whether this movement was already reversed.
+        bool alreadyReversed = await db.StockMovements
+            .AnyAsync(m => m.ReversesMovementId == id);
+
+        if (alreadyReversed)
+        {
+            return Results.Conflict(new
+            {
+                Message = "This movement has already been reversed."
+            });
+        }
+
+        // 6. Reverse the movement direction.
+        int? reversalSource = original.ToLocationId;
+        int? reversalDestination = original.FromLocationId;
+
+        // 7. Check available stock if the reversal removes stock.
+        if (reversalSource is int fromId)
+        {
+            var movements = await db.StockMovements
+                .AsNoTracking()
+                .Where(m =>
+                    m.ProductId == original.ProductId &&
+                    (m.FromLocationId == fromId ||
+                     m.ToLocationId == fromId))
+                .ToListAsync();
+
+            int incoming = movements
+                .Where(m => m.ToLocationId == fromId)
+                .Sum(m => m.Quantity);
+
+            int outgoing = movements
+                .Where(m => m.FromLocationId == fromId)
+                .Sum(m => m.Quantity);
+
+            int available = incoming - outgoing;
+
+            if (available < original.Quantity)
+            {
+                return Results.BadRequest(new
+                {
+                    Message = "Cannot reverse: insufficient stock at the reversal source.",
+                    Available = available,
+                    Required = original.Quantity
+                });
+            }
+        }
+
+        // 8. Create a new compensating movement.
+        var reversal = new StockMovement
+        {
+            ProductId = original.ProductId,
+            FromLocationId = reversalSource,
+            ToLocationId = reversalDestination,
+            Quantity = original.Quantity,
+            OccurredAtUtc = DateTime.UtcNow,
+            Reference = $"REV-{original.Id}",
+            ReversesMovementId = original.Id,
+            ReversalReason = reason
+        };
+
+        db.StockMovements.Add(reversal);
+
+        // 9. Save and commit.
+        await db.SaveChangesAsync();
+        await transaction.CommitAsync();
+
+        return Results.Created(
+            $"/stock-movements/{reversal.Id}",
+            reversal);
+    }
+    catch (DbUpdateException ex)
+        when (ex.InnerException is SqliteException sqlite &&
+              sqlite.SqliteErrorCode == 19 &&
+              sqlite.SqliteExtendedErrorCode == 2067)
+    {
+        // Database rejected a duplicate reversal.
+        return Results.Conflict(new
+        {
+            Message = "This movement has already been reversed."
+        });
+    }
+    catch (SqliteException ex)
+        when (ex.SqliteErrorCode is 5 or 6)
+    {
+        return Results.Json(new
+        {
+            Message = "Inventory database is temporarily busy."
+        }, statusCode: 503);
+    }
+    catch (DbUpdateException ex)
+        when (ex.InnerException is SqliteException sqlite &&
+              sqlite.SqliteErrorCode is 5 or 6)
+    {
+        return Results.Json(new
+        {
+            Message = "Inventory database is temporarily busy."
+        }, statusCode: 503);
+    }
+});
+
 app.Run();
+
+public partial class Program { }

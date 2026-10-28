@@ -111,12 +111,22 @@ namespace InventoryApi.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("ReversalReason")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ReversesMovementId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<int?>("ToLocationId")
                         .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 
                     b.HasIndex("FromLocationId");
+
+                    b.HasIndex("ReversesMovementId")
+                        .IsUnique();
 
                     b.HasIndex("ToLocationId");
 
@@ -137,6 +147,11 @@ namespace InventoryApi.Migrations
                         .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("InventoryApi.Models.StockMovement", null)
+                        .WithMany()
+                        .HasForeignKey("ReversesMovementId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.HasOne("InventoryApi.Models.StockLocation", null)
                         .WithMany()
