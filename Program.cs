@@ -1,8 +1,9 @@
-using InventoryApi.Data;
-using InventoryApi.Models;
-using Microsoft.EntityFrameworkCore;
 using System.Data;
 using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using InventoryApi.Data;
+using InventoryApi.Models;
+using InventoryApi.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -567,6 +568,7 @@ app.MapPost("/stock-movements/{id:int}/reverse",
             await db.Database.BeginTransactionAsync(
                 IsolationLevel.Serializable);
 
+
         // 3. Find the original movement.
         var original = await db.StockMovements
             .AsNoTracking()
@@ -579,6 +581,32 @@ app.MapPost("/stock-movements/{id:int}/reverse",
                 Message = $"Movement {id} was not found."
             });
         }
+
+        // NEW: Prevent reversing sales-linked movements.
+        bool belongsToSale = await db.SaleItems
+            .AnyAsync(item => item.StockMovementId == id);
+
+        if (belongsToSale)
+        {
+            return Results.Conflict(new
+            {
+                Message =
+                    "This movement belongs to a sale. " +
+                    "Use the sales correction workflow."
+            });
+        }
+
+        // 4. Do not allow reversing a reversal.
+        if (original.ReversesMovementId is not null)
+        {
+            return Results.Conflict(new
+            {
+                Message = "A reversal cannot be reversed."
+            });
+        }
+
+        // Continue with the existing reversal logic...
+
 
         // 4. Do not allow reversing a reversal.
         if (original.ReversesMovementId is not null)
@@ -688,6 +716,298 @@ app.MapPost("/stock-movements/{id:int}/reverse",
             Message = "Inventory database is temporarily busy."
         }, statusCode: 503);
     }
+
+
+});
+
+app.MapPost("/sales",
+    async (CreateSaleRequest request, InventoryDbContext db) =>
+{
+    // 1. Validate the request.
+    if (request.Items is null || request.Items.Count == 0)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "A sale must contain at least one item."
+        });
+    }
+
+    if (request.Items.Count > 100)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "A sale cannot contain more than 100 lines."
+        });
+    }
+
+    if (request.Items.Any(item =>
+        item is null ||
+        item.ProductId <= 0 ||
+        item.FromLocationId <= 0 ||
+        item.Quantity <= 0))
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Every item needs a valid product, location and positive quantity."
+        });
+    }
+
+    try
+    {
+        // 2. Begin transaction before reading products or stock.
+        await using var transaction =
+            await db.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable);
+
+        // 3. Fetch the products and locations.
+        int[] productIds = request.Items
+            .Select(i => i.ProductId)
+            .Distinct()
+            .ToArray();
+
+        int[] locationIds = request.Items
+            .Select(i => i.FromLocationId)
+            .Distinct()
+            .ToArray();
+
+        var products = await db.Products
+            .AsNoTracking()
+            .Where(p => productIds.Contains(p.Id))
+            .ToDictionaryAsync(p => p.Id);
+
+        var locations = await db.StockLocations
+            .AsNoTracking()
+            .Where(l => locationIds.Contains(l.Id))
+            .ToDictionaryAsync(l => l.Id);
+
+        // 4. Validate all products and sale locations.
+        foreach (var item in request.Items)
+        {
+            if (!products.ContainsKey(item.ProductId))
+            {
+                return Results.BadRequest(new
+                {
+                    Message = $"Product {item.ProductId} does not exist."
+                });
+            }
+
+            if (!locations.TryGetValue(
+                item.FromLocationId, out var location))
+            {
+                return Results.BadRequest(new
+                {
+                    Message = $"Location {item.FromLocationId} does not exist."
+                });
+            }
+
+            if (!location.IsUsable)
+            {
+                return Results.BadRequest(new
+                {
+                    Message = $"Sales cannot issue stock from {location.Name}."
+                });
+            }
+        }
+
+        // 5. Calculate stock requirements.
+        // Grouping prevents duplicate lines from overselling.
+        var requirements = request.Items
+            .GroupBy(item => new
+            {
+                item.ProductId,
+                item.FromLocationId
+            })
+            .Select(group => new
+            {
+                group.Key.ProductId,
+                group.Key.FromLocationId,
+                Required = group.Sum(i => (long)i.Quantity)
+            })
+            .ToList();
+
+        // 6. Load relevant inventory history.
+        var movements = await db.StockMovements
+            .AsNoTracking()
+            .Where(m => productIds.Contains(m.ProductId))
+            .ToListAsync();
+
+        // 7. Check every product-location balance.
+        foreach (var requirement in requirements)
+        {
+            long incoming = movements
+                .Where(m =>
+                    m.ProductId == requirement.ProductId &&
+                    m.ToLocationId == requirement.FromLocationId)
+                .Sum(m => (long)m.Quantity);
+
+            long outgoing = movements
+                .Where(m =>
+                    m.ProductId == requirement.ProductId &&
+                    m.FromLocationId == requirement.FromLocationId)
+                .Sum(m => (long)m.Quantity);
+
+            long available = incoming - outgoing;
+
+            if (available < requirement.Required)
+            {
+                return Results.BadRequest(new
+                {
+                    Message = "Insufficient stock for sale.",
+                    requirement.ProductId,
+                    requirement.FromLocationId,
+                    Available = available,
+                    Required = requirement.Required
+                });
+            }
+        }
+
+        // 8. Capture the timestamp ONCE for the whole sale.
+        DateTime soldAtUtc = DateTime.UtcNow;
+
+        var sale = new Sale
+        {
+            SoldAtUtc = soldAtUtc,
+            BusinessDate =
+                BusinessDateCalculator.GetBusinessDate(soldAtUtc)
+        };
+
+        // 9. Save sale to generate its ID.
+        db.Sales.Add(sale);
+        await db.SaveChangesAsync();
+
+        // 10. Create an inventory deduction for each sale line.
+        var stockMovements = request.Items
+            .Select((item, index) => new StockMovement
+            {
+                ProductId = item.ProductId,
+                FromLocationId = item.FromLocationId,
+                ToLocationId = null,
+                Quantity = item.Quantity,
+                OccurredAtUtc = soldAtUtc,
+                Reference = $"SALE-{sale.Id}-ITEM-{index + 1}"
+            })
+            .ToList();
+
+        db.StockMovements.AddRange(stockMovements);
+        await db.SaveChangesAsync();
+
+        // 11. Save historical product prices and costs.
+        var saleItems = new List<SaleItem>();
+
+        for (int i = 0; i < request.Items.Count; i++)
+        {
+            var requestedItem = request.Items[i];
+            var product = products[requestedItem.ProductId];
+
+            saleItems.Add(new SaleItem
+            {
+                SaleId = sale.Id,
+                ProductId = product.Id,
+                FromLocationId = requestedItem.FromLocationId,
+                Quantity = requestedItem.Quantity,
+                ProductNameSnapshot = product.Name,
+                CategorySnapshot = product.Category,
+                UnitSellingPrice = product.SellingPrice,
+                UnitPurchaseCost = product.PurchaseCost,
+                StockMovementId = stockMovements[i].Id
+            });
+        }
+
+        db.SaleItems.AddRange(saleItems);
+        await db.SaveChangesAsync();
+
+        // 12. Calculate financial totals in C#.
+        decimal totalRevenue = saleItems.Sum(item =>
+            item.UnitSellingPrice * item.Quantity);
+
+        decimal totalCost = saleItems.Sum(item =>
+            item.UnitPurchaseCost * item.Quantity);
+
+        decimal grossProfit = totalRevenue - totalCost;
+
+        // 13. Commit ALL database changes together.
+        await transaction.CommitAsync();
+
+        // 14. Return the newly created sale.
+        return Results.Created($"/sales/{sale.Id}", new
+        {
+            sale.Id,
+            sale.SoldAtUtc,
+            sale.BusinessDate,
+            TotalRevenue = totalRevenue,
+            TotalCost = totalCost,
+            GrossProfit = grossProfit,
+            Items = saleItems.Select(item => new
+            {
+                item.Id,
+                item.ProductId,
+                item.ProductNameSnapshot,
+                item.CategorySnapshot,
+                item.FromLocationId,
+                item.Quantity,
+                item.UnitSellingPrice,
+                item.UnitPurchaseCost,
+                item.StockMovementId,
+                LineRevenue =
+                    item.UnitSellingPrice * item.Quantity,
+                LineCost =
+                    item.UnitPurchaseCost * item.Quantity
+            }).ToList()
+        });
+    }
+    catch (SqliteException ex)
+        when (ex.SqliteErrorCode is 5 or 6)
+    {
+        return Results.Json(new
+        {
+            Message = "Inventory database is temporarily busy."
+        }, statusCode: 503);
+    }
+    catch (DbUpdateException ex)
+        when (ex.InnerException is SqliteException sqlite &&
+              sqlite.SqliteErrorCode is 5 or 6)
+    {
+        return Results.Json(new
+        {
+            Message = "Inventory database is temporarily busy."
+        }, statusCode: 503);
+    }
+});
+
+app.MapGet("/sales/{id:int}",
+    async (int id, InventoryDbContext db) =>
+{
+    // Find the sale and include its items.
+    var sale = await db.Sales
+        .AsNoTracking()
+        .Include(s => s.Items)
+        .FirstOrDefaultAsync(s => s.Id == id);
+
+    if (sale is null)
+    {
+        return Results.NotFound(new
+        {
+            Message = $"Sale {id} was not found."
+        });
+    }
+
+    // Calculate totals using saved historical prices.
+    decimal revenue = sale.Items.Sum(i =>
+        i.UnitSellingPrice * i.Quantity);
+
+    decimal cost = sale.Items.Sum(i =>
+        i.UnitPurchaseCost * i.Quantity);
+
+    return Results.Ok(new
+    {
+        sale.Id,
+        sale.SoldAtUtc,
+        sale.BusinessDate,
+        TotalRevenue = revenue,
+        TotalCost = cost,
+        GrossProfit = revenue - cost,
+        Items = sale.Items.OrderBy(i => i.Id).ToList()
+    });
 });
 
 app.Run();

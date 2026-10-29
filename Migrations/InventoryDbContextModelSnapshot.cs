@@ -44,6 +44,76 @@ namespace InventoryApi.Migrations
                     b.ToTable("Products");
                 });
 
+            modelBuilder.Entity("InventoryApi.Models.Sale", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<DateOnly>("BusinessDate")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTime>("SoldAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessDate");
+
+                    b.ToTable("Sales", (string)null);
+                });
+
+            modelBuilder.Entity("InventoryApi.Models.SaleItem", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("CategorySnapshot")
+                        .IsRequired()
+                        .HasMaxLength(60)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("FromLocationId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ProductId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("ProductNameSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("SaleId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("StockMovementId")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("UnitPurchaseCost")
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("UnitSellingPrice")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("FromLocationId");
+
+                    b.HasIndex("ProductId");
+
+                    b.HasIndex("SaleId");
+
+                    b.HasIndex("StockMovementId")
+                        .IsUnique();
+
+                    b.ToTable("SaleItems", (string)null);
+                });
+
             modelBuilder.Entity("InventoryApi.Models.StockLocation", b =>
                 {
                     b.Property<int>("Id")
@@ -135,6 +205,32 @@ namespace InventoryApi.Migrations
                     b.ToTable("StockMovements");
                 });
 
+            modelBuilder.Entity("InventoryApi.Models.SaleItem", b =>
+                {
+                    b.HasOne("InventoryApi.Models.StockLocation", null)
+                        .WithMany()
+                        .HasForeignKey("FromLocationId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("InventoryApi.Models.Product", null)
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("InventoryApi.Models.Sale", null)
+                        .WithMany("Items")
+                        .HasForeignKey("SaleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("InventoryApi.Models.StockMovement", null)
+                        .WithOne()
+                        .HasForeignKey("InventoryApi.Models.SaleItem", "StockMovementId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
             modelBuilder.Entity("InventoryApi.Models.StockMovement", b =>
                 {
                     b.HasOne("InventoryApi.Models.StockLocation", null)
@@ -157,6 +253,11 @@ namespace InventoryApi.Migrations
                         .WithMany()
                         .HasForeignKey("ToLocationId")
                         .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("InventoryApi.Models.Sale", b =>
+                {
+                    b.Navigation("Items");
                 });
 #pragma warning restore 612, 618
         }

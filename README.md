@@ -67,7 +67,60 @@ Only **Store** and **Wine Chiller** count toward usable stock.
 - Run integration tests against isolated temporary SQLite databases.
 - Apply the real EF Core migrations to test databases.
 - Test product-related inventory workflows, stock balances, validation, concurrency, and reversals.
-- **13 integration tests** in the current suite.
+- **25 integration tests** in the current suite.
+
+### Sales Integration Tests
+
+The sales test suite verifies:
+
+- Successful multi-item sales
+- Automatic inventory deductions
+- Validation of combined quantities across duplicate sale lines
+- The Singapore 3 AM business-date cutoff
+- Concurrent sales competing for the final available unit
+- Atomic rollback after an injected database failure
+- Historical price and purchase-cost snapshots
+- Correct relationships between sale items and stock movements
+- Prevention of direct reversal or deletion of sales-linked stock movements
+- Protection against product deletion after sales have been recorded
+
+The full test suite contains 25 test cases.
+
+Run all tests:
+
+```powershell
+dotnet test InventoryApi.sln
+```
+
+### Sales Transaction Management
+
+- Record sales containing multiple products.
+- Deduct sold quantities from inventory automatically.
+- Support sales from Store and Wine Chiller.
+- Validate all products, locations and stock quantities.
+- Reject sales when combined item quantities exceed available stock.
+- Save sales, sale items and stock deductions in one database transaction.
+- Preserve product name, category, selling price and purchase cost at the time of sale.
+- Calculate total revenue, total cost and gross profit.
+- Retrieve saved sales and their associated items.
+- Prevent direct reversal of stock movements linked to sales.
+- Prevent deletion of products with recorded inventory history.
+
+### Business Date Handling
+
+- Store the actual sale timestamp in UTC.
+- Calculate business dates using Singapore time (UTC+8).
+- Apply a 3 AM business-day cutoff.
+- Associate sales before 3 AM with the previous business date.
+- Preserve historical reporting dates independently of the server's timezone.
+
+### Sales Reliability
+
+- Protect sales from concurrent overselling using SQLite transactions.
+- Roll back sale records and inventory deductions if a database write fails.
+- Preserve historical selling prices and costs after product changes.
+- Maintain links between sale items and their stock movements.
+- Verify audit integrity using automated integration tests.
 
 ## API Endpoints
 
@@ -99,6 +152,13 @@ Only **Store** and **Wine Chiller** count toward usable stock.
 | GET    | `/stock-movements/{id}`         | Get one movement                                 | 200 OK      |
 | POST   | `/stock-movements`              | Record a receipt, transfer, or issue             | 201 Created |
 | POST   | `/stock-movements/{id}/reverse` | Record a linked reversal                         | 201 Created |
+
+### Sales Endpoints
+
+| Method | Endpoint      | Description                                          |
+| ------ | ------------- | ---------------------------------------------------- |
+| POST   | `/sales`      | Record a multi-item sale and deduct inventory        |
+| GET    | `/sales/{id}` | Retrieve a sale and its historical financial details |
 
 The API also uses status codes such as **400 Bad Request**, **404 Not Found**, **409 Conflict**, and **503 Service Unavailable** where appropriate.
 
@@ -248,6 +308,43 @@ After these two movements, product 1 has **10 total units** and **7 usable units
 
 Replace the example product and movement IDs with IDs returned by your own API.
 
+### Example: Create a Sale
+
+**POST** `/sales`
+
+```json
+{
+  "items": [
+    {
+      "productId": 1,
+      "fromLocationId": 1,
+      "quantity": 2
+    },
+    {
+      "productId": 2,
+      "fromLocationId": 4,
+      "quantity": 1
+    }
+  ]
+}
+```
+
+The API retrieves product prices and purchase costs from the database,
+validates available inventory and records all deductions atomically.
+
+Example financial result:
+
+| Metric        |   Amount |
+| ------------- | -------: |
+| Revenue       | S$440.00 |
+| Purchase cost | S$180.00 |
+| Gross profit  | S$260.00 |
+
+The amounts above are illustrative and depend on the products' recorded prices.
+
+The response includes the sale ID, UTC timestamp, Singapore business date,
+financial totals and individual sale items.
+
 ## Automated Testing
 
 The solution contains an xUnit integration-test project. Tests use ASP.NET Core's test server and isolated SQLite databases so they do not modify the normal local `inventory.db`.
@@ -290,18 +387,28 @@ InventoryApi/
 │   ├── StockLocation.cs
 │   ├── StockMovement.cs
 │   ├── CreateStockMovementRequest.cs
-│   └── ReverseStockMovementRequest.cs
+│   ├── ReverseStockMovementRequest.cs
+│   ├── Sale.cs
+│   ├── SaleItem.cs
+│   ├── CreateSaleRequest.cs
+│   └── CreateSaleItemRequest.cs
 ├── Migrations/
 │   ├── (InitialCreate migration files)
 │   ├── (AddStockLocationsAndMovements migration files)
 │   ├── (AddStockMovementReversals migration files)
-│   └── InventoryDbContextModelSnapshot.cs
+│   ├── InventoryDbContextModelSnapshot.cs
+│   └── (AddSalesTables migration files)
+├── Services/
+│   └── BusinessDateCalculator.cs
 ├── tests/
 │   └── InventoryApi.Tests/
 │       ├── InventoryApi.Tests.csproj
 │       ├── InventoryApiFactory.cs
 │       ├── InventoryEndpointsTests.cs
-│       └── StockMovementReversalTests.cs
+│       ├── StockMovementReversalTests.cs
+│       ├── BusinessDateCalculatorTests.cs
+│       ├── SalesEndpointsTests.cs
+│       └── SalesReliabilityTests.cs
 ├── Program.cs
 ├── InventoryApi.csproj
 ├── InventoryApi.sln
@@ -312,14 +419,22 @@ InventoryApi/
 
 ## Development Progress
 
-| Day   | Milestone                                                               | Status    |
-| ----- | ----------------------------------------------------------------------- | --------- |
-| Day 1 | Project setup and basic API endpoints                                   | Completed |
-|       | Product models, GET and POST endpoints, validation                      | Completed |
-|       | SQLite, Entity Framework Core, and migrations                           | Completed |
-|       | Product update and delete endpoints                                     | Completed |
-|       | Inventory locations, stock movement history, and stock balances         | Completed |
-|       | Automated integration tests, transaction safety, and movement reversals | Completed |
+## Development Progress
+
+| Day   | Milestone                                                            | Status    |
+| ----- | -------------------------------------------------------------------- | --------- |
+| Day 1 | Project setup and basic API endpoints                                | Completed |
+|       | Product models, GET and POST endpoints, validation                   | Completed |
+|       | SQLite, Entity Framework Core and migrations                         | Completed |
+|       | Product update and delete endpoints                                  | Completed |
+|       | Inventory locations, stock movement history and stock balances       | Completed |
+|       | Automated inventory tests, transaction safety and movement reversals | Completed |
+| Day 2 | Sales database models and relationships                              | Completed |
+|       | Multi-item sales and automatic inventory deductions                  | Completed |
+|       | Historical price and purchase-cost snapshots                         | Completed |
+|       | Singapore 3 AM business-day calculation                              | Completed |
+|       | Sales concurrency protection and atomic rollback testing             | Completed |
+|       | Sales audit-integrity tests                                          | Completed |
 
 ## Current Limitations
 

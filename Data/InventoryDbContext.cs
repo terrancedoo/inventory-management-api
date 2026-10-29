@@ -21,6 +21,11 @@ public class InventoryDbContext : DbContext
     public DbSet<StockMovement> StockMovements
         => Set<StockMovement>();
 
+    // Sales tables
+    public DbSet<Sale> Sales => Set<Sale>();
+
+    public DbSet<SaleItem> SaleItems => Set<SaleItem>();
+
     // Database configuration
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
@@ -124,5 +129,69 @@ public class InventoryDbContext : DbContext
                 .IsUnique();
 
         });
+
+        // Configure sales
+        modelBuilder.Entity<Sale>(entity =>
+        {
+            entity.ToTable("Sales");
+
+            // Primary key
+            entity.HasKey(s => s.Id);
+
+            // Date and time when the sale was recorded
+            entity.Property(s => s.SoldAtUtc)
+                .IsRequired();
+
+            // Singapore business date
+            entity.Property(s => s.BusinessDate)
+                .IsRequired();
+
+            // Index to support historical business-date queries
+            entity.HasIndex(s => s.BusinessDate);
+        });
+        // Configure sale items
+        modelBuilder.Entity<SaleItem>(entity =>
+        {
+            entity.ToTable("SaleItems");
+
+            // Primary key
+            entity.HasKey(item => item.Id);
+
+            // Validate maximum snapshot lengths
+            entity.Property(item => item.ProductNameSnapshot)
+                .IsRequired()
+                .HasMaxLength(120);
+
+            entity.Property(item => item.CategorySnapshot)
+                .IsRequired()
+                .HasMaxLength(60);
+
+            // One Sale can have many SaleItems
+            entity.HasOne<Sale>()
+                .WithMany(s => s.Items)
+                .HasForeignKey(item => item.SaleId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Every SaleItem refers to an existing Product
+            entity.HasOne<Product>()
+                .WithMany()
+                .HasForeignKey(item => item.ProductId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Every SaleItem has an inventory source location
+            entity.HasOne<StockLocation>()
+                .WithMany()
+                .HasForeignKey(item => item.FromLocationId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            // Optional one-to-one link to its stock deduction
+            entity.HasOne<StockMovement>()
+                .WithOne()
+                .HasForeignKey<SaleItem>(
+                    item => item.StockMovementId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
     }
+
+
 }
