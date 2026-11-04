@@ -1,202 +1,155 @@
 # Inventory Management API
 
-A RESTful inventory management API built with **C#**, **ASP.NET Core (.NET 10)**, **Entity Framework Core**, and **SQLite**.
+A RESTful inventory and sales management API built with **C#**, **ASP.NET Core Minimal APIs (.NET 10)**, **Entity Framework Core**, and **SQLite**.
 
-This portfolio project models inventory operations such as product management, stock receipts, transfers, issues, and corrections. It focuses on practical backend development, database relationships, transaction safety, automated integration testing, and auditable stock history.
+This developer portfolio project covers product management, inventory movements, auditable reversals, transactional sales, historical financial snapshots, category-based BACK calculations, daily receipt numbering, and staff sales allocations. The focus is on backend business rules, data integrity, transaction safety, and automated testing.
 
-> **Project status:** Active development. All completed milestones so far are grouped under **Day 1** in the development log.
+> **Project status:** Active development. **Day 1, Day 2, and Day 3 completed.** Latest local verification: **45 tests passed, 0 failed**.
 
 ## Tech Stack
 
-| Technology                       | Purpose                                 |
-| -------------------------------- | --------------------------------------- |
-| C# / .NET 10                     | Backend development                     |
-| ASP.NET Core Minimal APIs        | HTTP endpoints                          |
-| Entity Framework Core            | Database access and migrations          |
-| SQLite                           | Local relational database               |
-| LINQ                             | Database queries and stock calculations |
-| xUnit                            | Automated integration tests             |
-| Microsoft.AspNetCore.Mvc.Testing | In-process API test server              |
-| Git and GitHub                   | Version control                         |
+| Technology                       | Purpose                                     |
+| -------------------------------- | ------------------------------------------- |
+| C# / .NET 10                     | Backend development                         |
+| ASP.NET Core Minimal APIs        | HTTP endpoints                              |
+| Entity Framework Core            | Persistence, relationships, and migrations  |
+| SQLite                           | Local relational database                   |
+| LINQ                             | Database queries and financial calculations |
+| xUnit                            | Unit and integration testing                |
+| Microsoft.AspNetCore.Mvc.Testing | In-process API integration tests            |
+| Git / GitHub                     | Version control                             |
 
 ## Implemented Features
 
 ### Product Management
 
-- Create products with database-generated IDs.
-- Retrieve all products or one product by ID.
-- Update product details.
-- Delete products that have no stock movement history.
-- Validate product name, category, purchase cost, and selling price.
-- Store product records persistently in SQLite.
+- Create, retrieve, and update products.
+- Delete products only when they have no movement history.
+- Validate product names, categories, purchase costs, and selling prices.
+- Store product records in SQLite with database-generated IDs.
 
 ### Inventory Locations and Stock Balances
 
-- Four predefined locations: **Store**, **Locker**, **Office**, and **Wine Chiller**.
-- Receive stock into a location.
-- Transfer stock between locations.
-- Issue stock out of tracked inventory.
-- Record every movement with a UTC timestamp and optional reference.
-- Calculate stock balances from incoming and outgoing movement history.
-- Reject movements that would make the source location's stock negative.
-
-Only **Store** and **Wine Chiller** count toward usable stock.
+- Four seeded locations: **Store**, **Locker**, **Office**, and **Wine Chiller**.
+- Record stock receipts, transfers, and issues with UTC timestamps and optional references.
+- Calculate balances from incoming and outgoing stock movements.
+- Reject movements that would leave insufficient stock at the source location.
+- Calculate **usable stock** from **Store** and **Wine Chiller** only.
 
 **Total stock** = Store + Locker + Office + Wine Chiller  
 **Usable stock** = Store + Wine Chiller
 
-### Transaction Safety
-
-- Use SQLite serializable transactions when validating and saving stock movements.
-- Keep stock availability checks and movement creation within the same transaction.
-- Handle SQLite busy/locked errors with an HTTP 503 response when contention cannot be resolved.
-- Prevent product deletion when stock movement history exists.
-
 ### Stock Movement Reversals
 
-- Reverse an existing movement by recording a new movement in the opposite direction.
-- Preserve the original movement in the audit history.
-- Link a reversal to its original movement.
-- Require a correction reason of 1–200 characters.
-- Reject duplicate reversals and attempts to reverse a reversal.
-- Reject reversals that would result in insufficient stock.
-- Enforce a unique database constraint on the original movement being reversed.
-
-### Automated Testing
-
-- Run integration tests against isolated temporary SQLite databases.
-- Apply the real EF Core migrations to test databases.
-- Test product-related inventory workflows, stock balances, validation, concurrency, and reversals.
-- **25 integration tests** in the current suite.
-
-### Sales Integration Tests
-
-The sales test suite verifies:
-
-- Successful multi-item sales
-- Automatic inventory deductions
-- Validation of combined quantities across duplicate sale lines
-- The Singapore 3 AM business-date cutoff
-- Concurrent sales competing for the final available unit
-- Atomic rollback after an injected database failure
-- Historical price and purchase-cost snapshots
-- Correct relationships between sale items and stock movements
-- Prevention of direct reversal or deletion of sales-linked stock movements
-- Protection against product deletion after sales have been recorded
-
-The full test suite contains 25 test cases.
-
-Run all tests:
-
-```powershell
-dotnet test InventoryApi.sln
-```
-
-### Sales Transaction Management
-
-- Record sales containing multiple products.
-- Deduct sold quantities from inventory automatically.
-- Support sales from Store and Wine Chiller.
-- Validate all products, locations and stock quantities.
-- Reject sales when combined item quantities exceed available stock.
-- Save sales, sale items and stock deductions in one database transaction.
-- Preserve product name, category, selling price and purchase cost at the time of sale.
-- Calculate total revenue, total cost and gross profit.
-- Retrieve saved sales and their associated items.
+- Correct a stock movement with a linked compensating movement instead of deleting history.
+- Require a reversal reason of 1–200 characters.
+- Prevent duplicate reversals and reversals of reversals.
+- Check available stock before recording a reversal that removes inventory.
 - Prevent direct reversal of stock movements linked to sales.
-- Prevent deletion of products with recorded inventory history.
+- Use database uniqueness constraints to protect reversal integrity.
 
-### Business Date Handling
+### Sales and Financial Snapshots
 
-- Store the actual sale timestamp in UTC.
-- Calculate business dates using Singapore time (UTC+8).
-- Apply a 3 AM business-day cutoff.
-- Associate sales before 3 AM with the previous business date.
-- Preserve historical reporting dates independently of the server's timezone.
+- Create multi-item sales and deduct stock automatically from usable locations.
+- Validate combined quantities across duplicate sale lines to prevent overselling.
+- Save sale headers, sale items, and stock movements atomically in a SQLite transaction.
+- Capture historical product name, category, unit selling price, and unit purchase cost for each sale item.
+- Calculate total revenue, total purchase cost, and gross profit.
+- Preserve historical receipt values when current product details change.
+- Record a UTC timestamp and the corresponding **Singapore business date**, using a **3 AM Singapore time cutoff**.
 
-### Sales Reliability
+### BACK Calculation
 
-- Protect sales from concurrent overselling using SQLite transactions.
-- Roll back sale records and inventory deductions if a database write fails.
-- Preserve historical selling prices and costs after product changes.
-- Maintain links between sale items and their stock movements.
-- Verify audit integrity using automated integration tests.
+- Calculate BACK using **(unit selling price − unit purchase cost) × quantity × 15%**.
+- Eligible categories: **Champagne, Red Wine, White Wine, Red & White Wine, Tequila, and Sake**.
+- Other categories, including a product labelled only `Wine`, currently calculate zero BACK.
+- Save category and BACK snapshots on each sale item so historical BACK does not change when a product is edited.
+- Include item-level `backAmount` and receipt-level `totalBack` in sales responses.
+- Keep BACK separate from gross profit and allocated net sales.
+
+### Receipt Numbering
+
+- Generate receipt numbers in the format `YYYYMMDD-001`, `YYYYMMDD-002`, and so on.
+- Use the **3 AM Singapore business-day cutoff** for the date portion.
+- Restart the sequence at `001` for each business date.
+- Store the receipt number and daily sequence on the sale.
+- Use unique database indexes on receipt number and `(BusinessDate, ReceiptSequence)`.
+- Generate receipt numbers inside the sales transaction; a rejected sale does not keep a receipt number.
+- Support concurrency safely: a contested request may return HTTP 503 rather than commit a duplicate receipt.
+
+### Sales Allocation (Up to Eight Ladies)
+
+- Optionally attach **0–8 unique lady names** to a receipt.
+- Accept an optional, nonnegative `excludedAmount` that cannot exceed the sale's revenue.
+- Calculate **eligible sales = total revenue − excluded amount**.
+- Divide eligible sales, total bottle costs, and BACK equally among assigned ladies.
+- Preserve cent-level sales/cost totals and four-decimal BACK totals by distributing rounding remainders.
+- Save each allocation with its position and name snapshot.
+- Calculate each allocated **net sales = allocated eligible sales − allocated bottle cost**.
+- Do **not** create extra stock movements or duplicate revenue when a receipt has multiple allocations.
+- Allow receipts with no ladies assigned; their allocation list is empty.
+
+### Transaction Safety and Audit Integrity
+
+- Use serializable SQLite transactions for operations that check and change stock.
+- Return HTTP 503 for database busy/locked conditions that cannot be resolved.
+- Roll back sale, stock movement, and allocation records together when a sale fails.
+- Preserve references between sale items and their stock movement records.
+- Protect products with stock history from deletion.
 
 ## API Endpoints
 
 ### General
 
-| Method | Endpoint  | Description                   |
-| ------ | --------- | ----------------------------- |
-| GET    | `/`       | Application information       |
-| GET    | `/health` | Health check                  |
-| GET    | `/about`  | Project/developer information |
+| Method | Endpoint  | Description             |
+| ------ | --------- | ----------------------- |
+| GET    | `/`       | Application information |
+| GET    | `/health` | Health check            |
+| GET    | `/about`  | Project information     |
 
 ### Products
 
-| Method | Endpoint         | Description                               | Success        |
-| ------ | ---------------- | ----------------------------------------- | -------------- |
-| GET    | `/products`      | Get all products                          | 200 OK         |
-| GET    | `/products/{id}` | Get one product                           | 200 OK         |
-| POST   | `/products`      | Create a product                          | 201 Created    |
-| PUT    | `/products/{id}` | Update a product                          | 204 No Content |
-| DELETE | `/products/{id}` | Delete a product without movement history | 204 No Content |
+| Method | Endpoint         | Description                            |
+| ------ | ---------------- | -------------------------------------- |
+| GET    | `/products`      | List products                          |
+| GET    | `/products/{id}` | Get a product                          |
+| POST   | `/products`      | Create a product                       |
+| PUT    | `/products/{id}` | Update a product                       |
+| DELETE | `/products/{id}` | Delete a product without stock history |
 
 ### Inventory
 
-| Method | Endpoint                        | Description                                      | Success     |
-| ------ | ------------------------------- | ------------------------------------------------ | ----------- |
-| GET    | `/locations`                    | List stock locations                             | 200 OK      |
-| GET    | `/products/{id}/stock`          | Get a product's balances by location             | 200 OK      |
-| GET    | `/stock-movements`              | List movements; optionally filter by `productId` | 200 OK      |
-| GET    | `/stock-movements/{id}`         | Get one movement                                 | 200 OK      |
-| POST   | `/stock-movements`              | Record a receipt, transfer, or issue             | 201 Created |
-| POST   | `/stock-movements/{id}/reverse` | Record a linked reversal                         | 201 Created |
+| Method | Endpoint                        | Description                                 |
+| ------ | ------------------------------- | ------------------------------------------- |
+| GET    | `/locations`                    | List seeded locations                       |
+| GET    | `/products/{id}/stock`          | Stock totals and balances by location       |
+| GET    | `/stock-movements`              | List movements; optional `productId` filter |
+| GET    | `/stock-movements/{id}`         | Get one movement                            |
+| POST   | `/stock-movements`              | Receive, transfer, or issue stock           |
+| POST   | `/stock-movements/{id}/reverse` | Create an audited reversal                  |
 
-### Sales Endpoints
+### Sales
 
-| Method | Endpoint      | Description                                          |
-| ------ | ------------- | ---------------------------------------------------- |
-| POST   | `/sales`      | Record a multi-item sale and deduct inventory        |
-| GET    | `/sales/{id}` | Retrieve a sale and its historical financial details |
+| Method | Endpoint      | Description                                                                          |
+| ------ | ------------- | ------------------------------------------------------------------------------------ |
+| POST   | `/sales`      | Create sale, deduct stock, calculate BACK, assign receipt number, and allocate sales |
+| GET    | `/sales/{id}` | Retrieve historical receipt, financial totals, BACK, and allocations                 |
 
-The API also uses status codes such as **400 Bad Request**, **404 Not Found**, **409 Conflict**, and **503 Service Unavailable** where appropriate.
+The API returns standard HTTP status codes such as **201 Created**, **204 No Content**, **400 Bad Request**, **404 Not Found**, **409 Conflict**, and **503 Service Unavailable** where applicable.
 
-## Data Models
+## Business Rules
 
-### Product
+| Metric                          | Formula or rule                                                           |
+| ------------------------------- | ------------------------------------------------------------------------- |
+| Line revenue                    | Unit selling price × quantity                                             |
+| Line cost                       | Unit purchase cost × quantity                                             |
+| Gross profit                    | Total revenue − total cost                                                |
+| BACK (eligible categories only) | (Unit selling price − unit purchase cost) × quantity × 15%                |
+| Eligible sales                  | Total revenue − excluded amount                                           |
+| Per-lady net sales              | Allocated eligible sales − allocated bottle cost                          |
+| Business date                   | Singapore local date, with sales before 3 AM assigned to the previous day |
 
-| Property       | Type      | Description                     |
-| -------------- | --------- | ------------------------------- |
-| `Id`           | `int`     | Database-generated identifier   |
-| `Name`         | `string`  | Product name (1–120 characters) |
-| `Category`     | `string`  | Category (1–60 characters)      |
-| `PurchaseCost` | `decimal` | Cost, zero or greater           |
-| `SellingPrice` | `decimal` | Price, greater than zero        |
-
-### StockLocation
-
-| Property   | Type     | Description                    |
-| ---------- | -------- | ------------------------------ |
-| `Id`       | `int`    | Location identifier            |
-| `Name`     | `string` | Location name                  |
-| `IsUsable` | `bool`   | Whether stock counts as usable |
-
-### StockMovement
-
-| Property             | Type       | Description                             |
-| -------------------- | ---------- | --------------------------------------- |
-| `Id`                 | `int`      | Movement identifier                     |
-| `ProductId`          | `int`      | Product being moved                     |
-| `FromLocationId`     | `int?`     | Source; `null` for external receipts    |
-| `ToLocationId`       | `int?`     | Destination; `null` for external issues |
-| `Quantity`           | `int`      | Positive quantity                       |
-| `OccurredAtUtc`      | `DateTime` | Server-generated UTC timestamp          |
-| `Reference`          | `string?`  | Optional reference                      |
-| `ReversesMovementId` | `int?`     | Original movement ID when reversing     |
-| `ReversalReason`     | `string?`  | Explanation for a reversal              |
-
-A stock movement uses **one or two locations**. Both source and destination cannot be `null`, and they cannot be the same location.
+BACK is recorded separately; it is **not subtracted from net sales**.
 
 ## Getting Started
 
@@ -206,7 +159,7 @@ A stock movement uses **one or two locations**. Both source and destination cann
 - Git
 - EF Core CLI (`dotnet-ef`) compatible with EF Core 10
 
-If needed, install the EF Core CLI:
+Install the EF Core CLI if needed:
 
 ```powershell
 dotnet tool install --global dotnet-ef --version 10.0.14
@@ -225,13 +178,13 @@ cd inventory-management-api
 dotnet restore InventoryApi.sln
 ```
 
-### 3. Apply database migrations
+### 3. Apply migrations
 
 ```powershell
 dotnet ef database update
 ```
 
-This creates or updates the local SQLite database, including the seeded inventory locations.
+This creates or updates the local SQLite database, including seeded inventory locations.
 
 ### 4. Run the API
 
@@ -239,11 +192,7 @@ This creates or updates the local SQLite database, including the seeded inventor
 dotnet run --project InventoryApi.csproj --urls http://localhost:5050
 ```
 
-Try these URLs:
-
-- `http://localhost:5050/health`
-- `http://localhost:5050/products`
-- `http://localhost:5050/locations`
+Try `http://localhost:5050/health`, `http://localhost:5050/products`, or `http://localhost:5050/locations`.
 
 ## Example Requests
 
@@ -260,9 +209,9 @@ Try these URLs:
 }
 ```
 
-The response includes the new product ID. Use that ID in later requests.
+The response contains the new product ID. Use the returned ID in later requests.
 
-### Receive 10 units into Store
+### Receive stock into Store
 
 **POST** `/stock-movements`
 
@@ -276,7 +225,7 @@ The response includes the new product ID. Use that ID in later requests.
 }
 ```
 
-### Transfer 3 units from Store to Locker
+### Transfer stock from Store to Locker
 
 **POST** `/stock-movements`
 
@@ -290,13 +239,9 @@ The response includes the new product ID. Use that ID in later requests.
 }
 ```
 
-After these two movements, product 1 has **10 total units** and **7 usable units** (7 in Store, 3 in Locker), assuming there were no earlier movements.
+Assuming no earlier movements, this leaves 10 total units, including 7 usable units in Store and 3 non-usable units in Locker.
 
-### View stock balances
-
-**GET** `/products/1/stock`
-
-### Reverse a movement
+### Reverse a stock movement
 
 **POST** `/stock-movements/2/reverse`
 
@@ -306,14 +251,16 @@ After these two movements, product 1 has **10 total units** and **7 usable units
 }
 ```
 
-Replace the example product and movement IDs with IDs returned by your own API.
+Replace example product and movement IDs with the IDs returned by your own database.
 
-### Example: Create a Sale
+### Create a sale with allocations
 
 **POST** `/sales`
 
 ```json
 {
+  "excludedAmount": 40.0,
+  "ladyNames": ["Hana", "Yuna"],
   "items": [
     {
       "productId": 1,
@@ -329,50 +276,57 @@ Replace the example product and movement IDs with IDs returned by your own API.
 }
 ```
 
-The API retrieves product prices and purchase costs from the database,
-validates available inventory and records all deductions atomically.
+`excludedAmount` and `ladyNames` are optional. The sale requires real products and sufficient stock at the requested locations.
 
-Example financial result:
+**Illustrative result:** If product 1 is Champagne at S$180 selling price / S$75 cost and product 2 is a generic `Wine` product at S$80 selling price / S$30 cost:
 
-| Metric        |   Amount |
-| ------------- | -------: |
-| Revenue       | S$440.00 |
-| Purchase cost | S$180.00 |
-| Gross profit  | S$260.00 |
+| Metric              |   Amount |
+| ------------------- | -------: |
+| Total revenue       | S$440.00 |
+| Total purchase cost | S$180.00 |
+| Gross profit        | S$260.00 |
+| Total BACK          |  S$31.50 |
+| Excluded amount     |  S$40.00 |
+| Eligible sales      | S$400.00 |
 
-The amounts above are illustrative and depend on the products' recorded prices.
+Allocations in the example:
 
-The response includes the sale ID, UTC timestamp, Singapore business date,
-financial totals and individual sale items.
+| Metric                   |     Hana |     Yuna |
+| ------------------------ | -------: | -------: |
+| Allocated eligible sales | S$200.00 | S$200.00 |
+| Allocated bottle cost    |  S$90.00 |  S$90.00 |
+| Net sales                | S$110.00 | S$110.00 |
+| Allocated BACK           |  S$15.75 |  S$15.75 |
+
+The response includes the generated sale ID, UTC timestamp, Singapore business date, receipt number, historical item snapshots, financial totals, and allocations. Use **GET** `/sales/{id}` to retrieve that historical receipt later.
 
 ## Automated Testing
 
-The solution contains an xUnit integration-test project. Tests use ASP.NET Core's test server and isolated SQLite databases so they do not modify the normal local `inventory.db`.
+The solution includes xUnit unit tests and integration tests. API integration tests use an in-process test server and isolated SQLite databases with EF Core migrations, rather than the normal local `inventory.db`.
 
-Run all tests:
+Run the entire suite:
 
 ```powershell
 dotnet test InventoryApi.sln
 ```
 
-Run only reversal tests:
+Run a specific test class, for example:
 
 ```powershell
-dotnet test InventoryApi.sln --filter "FullyQualifiedName~StockMovementReversalTests"
+dotnet test InventoryApi.sln --filter "FullyQualifiedName~SalesEndpointsTests"
 ```
 
-The test suite covers:
+**Latest locally reported result: 45 tests passed, 0 failed, 0 skipped.**
 
-- Seeded locations and usable-stock flags
-- Receipts and transfers updating stock balances
-- Insufficient-stock rejection
-- Simultaneous issue attempts
-- Transaction lock contention
-- Transfer, receipt, and issue reversals
-- Duplicate reversal prevention
-- Invalid reversal reasons and missing movement IDs
-- Concurrent reversal attempts
-- Deletion protection for products with movement history
+Test coverage includes:
+
+- Product and inventory CRUD, location balances, validation, and reversal rules.
+- Concurrent inventory movements, duplicate reversals, and transaction contention.
+- Multi-item sales, combined stock requirements, atomic rollback, and audit relationships.
+- Historical price, category, cost, and BACK snapshots.
+- Receipt numbers, business-day cutoff, and concurrent receipt uniqueness.
+- Two-lady and eight-lady allocations, rounding reconciliation, and saved historical allocations.
+- Invalid lady lists, zero-lady receipts, excluded amount validation, and rollback on failed allocations.
 
 ## Project Structure
 
@@ -382,33 +336,28 @@ InventoryApi/
 │   └── InventoryDbContext.cs
 ├── Models/
 │   ├── Product.cs
-│   ├── CreateProductRequest.cs
-│   ├── UpdateProductRequest.cs
 │   ├── StockLocation.cs
 │   ├── StockMovement.cs
-│   ├── CreateStockMovementRequest.cs
-│   ├── ReverseStockMovementRequest.cs
 │   ├── Sale.cs
 │   ├── SaleItem.cs
-│   ├── CreateSaleRequest.cs
-│   └── CreateSaleItemRequest.cs
-├── Migrations/
-│   ├── (InitialCreate migration files)
-│   ├── (AddStockLocationsAndMovements migration files)
-│   ├── (AddStockMovementReversals migration files)
-│   ├── InventoryDbContextModelSnapshot.cs
-│   └── (AddSalesTables migration files)
+│   ├── SaleAllocation.cs
+│   └── (request models)
 ├── Services/
-│   └── BusinessDateCalculator.cs
+│   ├── BusinessDateCalculator.cs
+│   ├── BackCalculator.cs
+│   └── AllocationSplitter.cs
+├── Migrations/
+│   ├── (EF Core migration files)
+│   └── InventoryDbContextModelSnapshot.cs
 ├── tests/
 │   └── InventoryApi.Tests/
-│       ├── InventoryApi.Tests.csproj
 │       ├── InventoryApiFactory.cs
 │       ├── InventoryEndpointsTests.cs
 │       ├── StockMovementReversalTests.cs
 │       ├── BusinessDateCalculatorTests.cs
 │       ├── SalesEndpointsTests.cs
-│       └── SalesReliabilityTests.cs
+│       ├── SalesReliabilityTests.cs
+│       └── BackCalculatorTests.cs
 ├── Program.cs
 ├── InventoryApi.csproj
 ├── InventoryApi.sln
@@ -419,46 +368,36 @@ InventoryApi/
 
 ## Development Progress
 
-## Development Progress
-
-| Day   | Milestone                                                            | Status    |
-| ----- | -------------------------------------------------------------------- | --------- |
-| Day 1 | Project setup and basic API endpoints                                | Completed |
-|       | Product models, GET and POST endpoints, validation                   | Completed |
-|       | SQLite, Entity Framework Core and migrations                         | Completed |
-|       | Product update and delete endpoints                                  | Completed |
-|       | Inventory locations, stock movement history and stock balances       | Completed |
-|       | Automated inventory tests, transaction safety and movement reversals | Completed |
-| Day 2 | Sales database models and relationships                              | Completed |
-|       | Multi-item sales and automatic inventory deductions                  | Completed |
-|       | Historical price and purchase-cost snapshots                         | Completed |
-|       | Singapore 3 AM business-day calculation                              | Completed |
-|       | Sales concurrency protection and atomic rollback testing             | Completed |
-|       | Sales audit-integrity tests                                          | Completed |
+| Day   | Milestone                                                                                                                                                       | Status    |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Day 1 | Project setup, products, EF Core/SQLite migrations, inventory locations, stock ledger, safe reversals, and integration tests                                    | Completed |
+| Day 2 | Sales models, multi-item sales, 3 AM business date, historical price snapshots, concurrency protection, rollback, and audit tests                               | Completed |
+| Day 3 | BACK calculation and historical snapshots, receipt numbers, equal sales allocation for up to eight ladies, rounding, validations, and receipt integration tests | Completed |
 
 ## Current Limitations
 
-- No graphical frontend or user authentication/authorisation.
-- Sales transactions, commissions, and reporting are not yet implemented.
-- Stock balance calculations currently load movement history into memory rather than aggregating in SQL.
-- SQLite supports one active writer at a time; excessive lock contention can return HTTP 503.
-- No request idempotency keys for safely retrying uncertain requests.
-- Corrections record a reason but not an authenticated staff identity.
-- Product archiving is not yet implemented; products without movement history can be permanently deleted.
-- Automated tests run locally; GitHub Actions continuous integration is not configured yet.
+- No graphical frontend or user authentication/authorization.
+- Historical monthly reporting and analytics endpoints are not yet implemented.
+- No implemented sales cancellation/refund or full sales-correction workflow.
+- Product create/update endpoints do not yet consistently restrict prices to two decimal places; sales with staff allocations reject unsupported precision.
+- Existing sales created before some Day 3 migrations may have `null` historical BACK or receipt-number fields; no automatic backfill is documented.
+- Stock balances currently use movement history loaded into memory instead of database-side aggregation.
+- SQLite supports one active writer at a time; high contention can return HTTP 503.
+- No request idempotency keys for safely retrying potentially uncertain submissions.
+- No authenticated staff identity attached to inventory corrections.
+- No product archive / soft-delete workflow.
+- GitHub Actions continuous integration and deployment are not yet configured.
 
 ## Planned Features
 
-- Sales transactions linked to stock deductions
-- Revenue, cost, gross profit, and category-based commission calculations
-- 3 AM business-day cutoff for sales reporting
-- Previous completed month's historical reports (rather than real-time graphs)
-- Product archiving / soft deletion
-- Authentication and role-based authorisation
-- Request idempotency and more robust error handling
-- Database-side stock balance aggregation
-- JavaScript frontend
-- GitHub Actions CI and deployment
+- Historical business-day and previous-completed-month financial reports.
+- Sales corrections / voids with a complete audit trail.
+- Product archiving and consistent currency-precision validation.
+- Authentication and role-based authorization.
+- Request idempotency and more robust contention handling.
+- Database-side stock balance aggregation.
+- JavaScript frontend.
+- GitHub Actions CI and deployment.
 
 ## Author
 

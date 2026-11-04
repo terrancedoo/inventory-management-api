@@ -150,11 +150,15 @@ app.MapPost("/products",
     // Add product to database
     db.Products.Add(product);
 
+
+
     // Save changes to SQLite
     await db.SaveChangesAsync();
 
     // Return created product
     return Results.Created($"/products/{product.Id}", product);
+
+
 });
 
 app.MapPut("/products/{id:int}",
@@ -607,16 +611,6 @@ app.MapPost("/stock-movements/{id:int}/reverse",
 
         // Continue with the existing reversal logic...
 
-
-        // 4. Do not allow reversing a reversal.
-        if (original.ReversesMovementId is not null)
-        {
-            return Results.Conflict(new
-            {
-                Message = "A reversal cannot be reversed."
-            });
-        }
-
         // 5. Check whether this movement was already reversed.
         bool alreadyReversed = await db.StockMovements
             .AnyAsync(m => m.ReversesMovementId == id);
@@ -729,6 +723,51 @@ app.MapPost("/sales",
         return Results.BadRequest(new
         {
             Message = "A sale must contain at least one item."
+        });
+    }
+
+    // Validate excluded amount.
+    decimal excludedAmount = request.ExcludedAmount ?? 0m;
+
+    if (excludedAmount < 0m ||
+        excludedAmount != decimal.Round(excludedAmount, 2))
+    {
+        return Results.BadRequest(new
+        {
+            Message =
+                "Excluded amount must be non-negative and use at most two decimal places."
+        });
+    }
+
+    // Clean and validate lady names.
+    var ladyNames = request.LadyNames?
+        .Select(name => name?.Trim() ?? string.Empty)
+        .ToList() ?? new List<string>();
+
+    if (ladyNames.Count > 8)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "A receipt cannot have more than eight ladies."
+        });
+    }
+
+    if (ladyNames.Any(name =>
+        name.Length is < 1 or > 120))
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Each lady name must contain 1 to 120 characters."
+        });
+    }
+
+    if (ladyNames.Distinct(
+        StringComparer.OrdinalIgnoreCase).Count()
+        != ladyNames.Count)
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Duplicate lady names are not allowed."
         });
     }
 
@@ -864,11 +903,35 @@ app.MapPost("/sales",
         // 8. Capture the timestamp ONCE for the whole sale.
         DateTime soldAtUtc = DateTime.UtcNow;
 
+        // Get the business date using the 3 AM Singapore cutoff.
+        var businessDate =
+            BusinessDateCalculator.GetBusinessDate(soldAtUtc);
+
+        // Find the last receipt sequence for this business date.
+        // Existing sales without receipt numbers are ignored.
+        int lastSequence = await db.Sales
+            .Where(s =>
+                s.BusinessDate == businessDate &&
+                s.ReceiptSequence != null)
+            .OrderByDescending(s => s.ReceiptSequence)
+            .Select(s => s.ReceiptSequence)
+            .FirstOrDefaultAsync() ?? 0;
+
+        // Generate the next receipt sequence.
+        int nextSequence = lastSequence + 1;
+
+        // Format: YYYYMMDD-001, YYYYMMDD-002, etc.
+        string receiptNumber =
+            $"{businessDate:yyyyMMdd}-{nextSequence:D3}";
+
+        // Create the sale with its receipt information.
         var sale = new Sale
         {
             SoldAtUtc = soldAtUtc,
-            BusinessDate =
-                BusinessDateCalculator.GetBusinessDate(soldAtUtc)
+            BusinessDate = businessDate,
+            ReceiptSequence = nextSequence,
+            ReceiptNumber = receiptNumber,
+            ExcludedAmount = excludedAmount
         };
 
         // 9. Save sale to generate its ID.
@@ -891,7 +954,7 @@ app.MapPost("/sales",
         db.StockMovements.AddRange(stockMovements);
         await db.SaveChangesAsync();
 
-        // 11. Save historical product prices and costs.
+        // 11. Save historical product prices, costs and BACK.
         var saleItems = new List<SaleItem>();
 
         for (int i = 0; i < request.Items.Count; i++)
@@ -905,12 +968,26 @@ app.MapPost("/sales",
                 ProductId = product.Id,
                 FromLocationId = requestedItem.FromLocationId,
                 Quantity = requestedItem.Quantity,
+
+                // Historical product information
                 ProductNameSnapshot = product.Name,
                 CategorySnapshot = product.Category,
+
+                // Historical prices
                 UnitSellingPrice = product.SellingPrice,
                 UnitPurchaseCost = product.PurchaseCost,
+
+                // Calculate BACK at the time of sale
+                BackAmount = BackCalculator.Calculate(
+                    product.Category,
+                    product.SellingPrice,
+                    product.PurchaseCost,
+                    requestedItem.Quantity),
+
+                // Linked inventory deduction
                 StockMovementId = stockMovements[i].Id
             });
+
         }
 
         db.SaleItems.AddRange(saleItems);
@@ -925,8 +1002,71 @@ app.MapPost("/sales",
 
         decimal grossProfit = totalRevenue - totalCost;
 
+        // Calculate total BACK for this receipt.
+        decimal? totalBack = saleItems.Any(
+            item => item.BackAmount is null)
+            ? null
+            : saleItems.Sum(item => item.BackAmount!.Value);
+
+        // The excluded amount cannot exceed receipt revenue.
+        if (excludedAmount > totalRevenue)
+        {
+            return Results.BadRequest(new
+            {
+                Message = "Excluded amount cannot exceed receipt revenue."
+            });
+        }
+
+        decimal eligibleSales = totalRevenue - excludedAmount;
+
+        // Keep the original sale totals separate from allocations.
+        var allocations = new List<SaleAllocation>();
+
+        if (ladyNames.Count > 0)
+        {
+            // We allocate sales and costs in cents,
+            // and BACK to four decimal places.
+            if (totalRevenue != decimal.Round(totalRevenue, 2) ||
+                totalCost != decimal.Round(totalCost, 2) ||
+                totalBack is null ||
+                totalBack.Value != decimal.Round(totalBack.Value, 4))
+            {
+                return Results.BadRequest(new
+                {
+                    Message = "Sale amounts have unsupported decimal precision."
+                });
+            }
+
+            var salesShares = AllocationSplitter.Split(
+                eligibleSales, ladyNames.Count, 2);
+
+            var costShares = AllocationSplitter.Split(
+                totalCost, ladyNames.Count, 2);
+
+            var backShares = AllocationSplitter.Split(
+                totalBack.Value, ladyNames.Count, 4);
+
+            for (int i = 0; i < ladyNames.Count; i++)
+            {
+                allocations.Add(new SaleAllocation
+                {
+                    SaleId = sale.Id,
+                    Position = i + 1,
+                    LadyNameSnapshot = ladyNames[i],
+                    AllocatedEligibleSales = salesShares[i],
+                    AllocatedBottleCost = costShares[i],
+                    AllocatedBack = backShares[i]
+                });
+            }
+
+            db.SaleAllocations.AddRange(allocations);
+            await db.SaveChangesAsync();
+        }
+
         // 13. Commit ALL database changes together.
         await transaction.CommitAsync();
+
+
 
         // 14. Return the newly created sale.
         return Results.Created($"/sales/{sale.Id}", new
@@ -934,9 +1074,30 @@ app.MapPost("/sales",
             sale.Id,
             sale.SoldAtUtc,
             sale.BusinessDate,
+            sale.ReceiptSequence,
+            sale.ReceiptNumber,
             TotalRevenue = totalRevenue,
             TotalCost = totalCost,
             GrossProfit = grossProfit,
+            TotalBack = totalBack,
+
+            // Sales allocation information
+            ExcludedAmount = excludedAmount,
+            EligibleSales = eligibleSales,
+
+            Allocations = allocations
+    .OrderBy(a => a.Position)
+    .Select(a => new
+    {
+        a.Position,
+        a.LadyNameSnapshot,
+        a.AllocatedEligibleSales,
+        a.AllocatedBottleCost,
+        NetSales = a.AllocatedEligibleSales
+            - a.AllocatedBottleCost,
+        a.AllocatedBack
+    }).ToList(),
+
             Items = saleItems.Select(item => new
             {
                 item.Id,
@@ -947,13 +1108,18 @@ app.MapPost("/sales",
                 item.Quantity,
                 item.UnitSellingPrice,
                 item.UnitPurchaseCost,
+                item.BackAmount,
                 item.StockMovementId,
                 LineRevenue =
-                    item.UnitSellingPrice * item.Quantity,
+                                            item.UnitSellingPrice * item.Quantity,
                 LineCost =
-                    item.UnitPurchaseCost * item.Quantity
+                                            item.UnitPurchaseCost * item.Quantity
             }).ToList()
+
+
         });
+
+
     }
     catch (SqliteException ex)
         when (ex.SqliteErrorCode is 5 or 6)
@@ -981,8 +1147,9 @@ app.MapGet("/sales/{id:int}",
     var sale = await db.Sales
         .AsNoTracking()
         .Include(s => s.Items)
+        .Include(s => s.Allocations)
+        .AsSplitQuery()
         .FirstOrDefaultAsync(s => s.Id == id);
-
     if (sale is null)
     {
         return Results.NotFound(new
@@ -998,14 +1165,45 @@ app.MapGet("/sales/{id:int}",
     decimal cost = sale.Items.Sum(i =>
         i.UnitPurchaseCost * i.Quantity);
 
+    // Sum the historical BACK amounts.
+    // Null indicates an older sale that hasn't been evaluated.
+    decimal? totalBack = sale.Items.Any(
+        item => item.BackAmount is null)
+        ? null
+        : sale.Items.Sum(item => item.BackAmount!.Value);
+
     return Results.Ok(new
     {
         sale.Id,
         sale.SoldAtUtc,
         sale.BusinessDate,
+        sale.ReceiptSequence,
+        sale.ReceiptNumber,
         TotalRevenue = revenue,
         TotalCost = cost,
         GrossProfit = revenue - cost,
+        TotalBack = totalBack,
+
+        // Historical sales allocation information
+        ExcludedAmount = sale.ExcludedAmount,
+
+        EligibleSales = sale.ExcludedAmount is null
+    ? (decimal?)null
+    : revenue - sale.ExcludedAmount.Value,
+
+        Allocations = sale.Allocations
+    .OrderBy(a => a.Position)
+    .Select(a => new
+    {
+        a.Position,
+        a.LadyNameSnapshot,
+        a.AllocatedEligibleSales,
+        a.AllocatedBottleCost,
+        NetSales = a.AllocatedEligibleSales
+            - a.AllocatedBottleCost,
+        a.AllocatedBack
+    }).ToList(),
+
         Items = sale.Items.OrderBy(i => i.Id).ToList()
     });
 });

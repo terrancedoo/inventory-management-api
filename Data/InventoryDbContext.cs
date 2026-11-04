@@ -20,7 +20,8 @@ public class InventoryDbContext : DbContext
 
     public DbSet<StockMovement> StockMovements
         => Set<StockMovement>();
-
+    public DbSet<SaleAllocation> SaleAllocations
+        => Set<SaleAllocation>();
     // Sales tables
     public DbSet<Sale> Sales => Set<Sale>();
 
@@ -190,7 +191,63 @@ public class InventoryDbContext : DbContext
                 .HasForeignKey<SaleItem>(
                     item => item.StockMovementId)
                 .OnDelete(DeleteBehavior.Restrict);
+
+            entity.Property(i => i.CategorySnapshot)
+                .HasMaxLength(60);
+
+            entity.Property(i => i.BackAmount)
+                .HasPrecision(18, 4);
         });
+
+        // Receipt numbers must be unique.
+        modelBuilder.Entity<Sale>()
+            .HasIndex(s => s.ReceiptNumber)
+            .IsUnique();
+
+        // Each business date can use a sequence number only once.
+        modelBuilder.Entity<Sale>()
+            .HasIndex(s => new
+            {
+                s.BusinessDate,
+                s.ReceiptSequence
+            })
+            .IsUnique();
+
+        // Configure sales allocations.
+        modelBuilder.Entity<SaleAllocation>(entity =>
+        {
+            entity.Property(a => a.LadyNameSnapshot)
+                .IsRequired()
+                .HasMaxLength(120);
+
+            entity.Property(a => a.AllocatedEligibleSales)
+                .HasPrecision(18, 2);
+
+            entity.Property(a => a.AllocatedBottleCost)
+                .HasPrecision(18, 2);
+
+            entity.Property(a => a.AllocatedBack)
+                .HasPrecision(18, 4);
+
+            // Only one lady can occupy a receipt position.
+            entity.HasIndex(a => new
+            {
+                a.SaleId,
+                a.Position
+            }).IsUnique();
+        });
+
+        // Link each allocation to its parent sale.
+        modelBuilder.Entity<Sale>()
+            .HasMany(s => s.Allocations)
+            .WithOne(a => a.Sale)
+            .HasForeignKey(a => a.SaleId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        // Store the receipt's excluded amount.
+        modelBuilder.Entity<Sale>()
+            .Property(s => s.ExcludedAmount)
+            .HasPrecision(18, 2);
     }
 
 

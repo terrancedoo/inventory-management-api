@@ -19,8 +19,9 @@ public class SaleItem
     public string ProductNameSnapshot { get; set; }
         = string.Empty;
 
-    public string CategorySnapshot { get; set; }
-        = string.Empty;
+    public string? CategorySnapshot { get; set; }
+
+    public decimal? BackAmount { get; set; }
 
     // Historical prices at time of sale.
     public decimal UnitSellingPrice { get; set; }
@@ -29,4 +30,6 @@ public class SaleItem
 
     // Linked inventory deduction, assigned when the sale is saved.
     public int? StockMovementId { get; set; }
+
+
 }

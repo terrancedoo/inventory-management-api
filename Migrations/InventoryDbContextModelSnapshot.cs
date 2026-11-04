@@ -53,6 +53,16 @@ namespace InventoryApi.Migrations
                     b.Property<DateOnly>("BusinessDate")
                         .HasColumnType("TEXT");
 
+                    b.Property<decimal?>("ExcludedAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ReceiptNumber")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("ReceiptSequence")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime>("SoldAtUtc")
                         .HasColumnType("TEXT");
 
@@ -60,7 +70,50 @@ namespace InventoryApi.Migrations
 
                     b.HasIndex("BusinessDate");
 
+                    b.HasIndex("ReceiptNumber")
+                        .IsUnique();
+
+                    b.HasIndex("BusinessDate", "ReceiptSequence")
+                        .IsUnique();
+
                     b.ToTable("Sales", (string)null);
+                });
+
+            modelBuilder.Entity("InventoryApi.Models.SaleAllocation", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<decimal>("AllocatedBack")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("AllocatedBottleCost")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<decimal>("AllocatedEligibleSales")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("LadyNameSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Position")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("SaleId")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SaleId", "Position")
+                        .IsUnique();
+
+                    b.ToTable("SaleAllocations");
                 });
 
             modelBuilder.Entity("InventoryApi.Models.SaleItem", b =>
@@ -68,6 +121,10 @@ namespace InventoryApi.Migrations
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
+
+                    b.Property<decimal?>("BackAmount")
+                        .HasPrecision(18, 4)
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("CategorySnapshot")
                         .IsRequired()
@@ -205,6 +262,17 @@ namespace InventoryApi.Migrations
                     b.ToTable("StockMovements");
                 });
 
+            modelBuilder.Entity("InventoryApi.Models.SaleAllocation", b =>
+                {
+                    b.HasOne("InventoryApi.Models.Sale", "Sale")
+                        .WithMany("Allocations")
+                        .HasForeignKey("SaleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Sale");
+                });
+
             modelBuilder.Entity("InventoryApi.Models.SaleItem", b =>
                 {
                     b.HasOne("InventoryApi.Models.StockLocation", null)
@@ -257,6 +325,8 @@ namespace InventoryApi.Migrations
 
             modelBuilder.Entity("InventoryApi.Models.Sale", b =>
                 {
+                    b.Navigation("Allocations");
+
                     b.Navigation("Items");
                 });
 #pragma warning restore 612, 618
