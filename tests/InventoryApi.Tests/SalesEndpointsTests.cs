@@ -1472,4 +1472,782 @@ public class SalesEndpointsTests
         Assert.Equal(1,
             stock.GetProperty("totalStock").GetInt32());
     }
+
+    [Fact]
+    public async Task DailyLadiesReport_ReturnsCorrectHistoricalTotals()
+    {
+        // Arrange: use an isolated SQLite database.
+        using var factory = new InventoryApiFactory();
+        using var client = factory.CreateClient();
+
+        await factory.InitializeDatabaseAsync();
+
+        // 1. Create a Champagne product.
+        var productResponse = await client.PostAsJsonAsync(
+            "/products",
+            new
+            {
+                name = "Daily Report Champagne",
+                category = "Champagne",
+                purchaseCost = 75m,
+                sellingPrice = 180m
+            });
+
+        Assert.Equal(HttpStatusCode.Created,
+            productResponse.StatusCode);
+
+        var product = await productResponse.Content
+            .ReadFromJsonAsync<Product>();
+
+        Assert.NotNull(product);
+
+        // 2. Receive enough stock.
+        var stockResponse = await client.PostAsJsonAsync(
+            "/stock-movements",
+            new
+            {
+                productId = product.Id,
+                fromLocationId = (int?)null,
+                toLocationId = (int?)1,
+                quantity = 3
+            });
+
+        Assert.Equal(HttpStatusCode.Created,
+            stockResponse.StatusCode);
+
+        // 3. Sell two bottles, allocated to Hana and Yuna.
+        var saleResponse = await client.PostAsJsonAsync(
+            "/sales",
+            new
+            {
+                excludedAmount = 40m,
+                ladyNames = new[] { "Hana", "Yuna" },
+                items = new[]
+                {
+                new
+                {
+                    productId = product.Id,
+                    fromLocationId = 1,
+                    quantity = 2
+                }
+                }
+            });
+
+        Assert.Equal(HttpStatusCode.Created,
+            saleResponse.StatusCode);
+
+        var sale = await saleResponse.Content
+            .ReadFromJsonAsync<JsonElement>();
+
+        // Use the sale's actual stored business date.
+        // This avoids depending on when the test runs.
+        string businessDate = sale
+            .GetProperty("businessDate")
+            .GetString()![..10];
+
+        // 4. Request the daily report.
+        var reportResponse = await client.GetAsync(
+            $"/reports/ladies/daily?date={businessDate}");
+
+        Assert.Equal(HttpStatusCode.OK,
+            reportResponse.StatusCode);
+
+        var report = await reportResponse.Content
+            .ReadFromJsonAsync<JsonElement>();
+
+        // 5. Verify the date and number of ladies.
+        Assert.Equal(businessDate,
+            report.GetProperty("businessDate").GetString());
+
+        Assert.Equal(2,
+            report.GetProperty("ladyCount").GetInt32());
+
+        // 6. Verify totals for both ladies.
+        var totals = report.GetProperty("totals");
+
+        // Revenue: 2 x $180 = $360.
+        // Eligible sales: $360 - $40 = $320.
+        Assert.Equal(320m,
+            totals.GetProperty("sales").GetDecimal());
+
+        // Bottle cost: 2 x $75 = $150.
+        Assert.Equal(150m,
+            totals.GetProperty("totalBottleCost").GetDecimal());
+
+        Assert.Equal(170m,
+            totals.GetProperty("netSales").GetDecimal());
+
+        Assert.Equal(31.50m,
+            totals.GetProperty("back").GetDecimal());
+
+        // 7. Verify individual lady allocations.
+        var ladies = report.GetProperty("ladies")
+            .EnumerateArray()
+            .ToList();
+
+        Assert.Equal(2, ladies.Count);
+
+        Assert.Equal("Hana",
+            ladies[0].GetProperty("lady").GetString());
+
+        Assert.Equal("Yuna",
+            ladies[1].GetProperty("lady").GetString());
+
+        foreach (var lady in ladies)
+        {
+            Assert.Equal(160m,
+                lady.GetProperty("sales").GetDecimal());
+
+            Assert.Equal(75m,
+                lady.GetProperty("totalBottleCost").GetDecimal());
+
+            Assert.Equal(85m,
+                lady.GetProperty("netSales").GetDecimal());
+
+            Assert.Equal(15.75m,
+                lady.GetProperty("back").GetDecimal());
+        }
+
+        // 8. An empty historical date returns an empty report.
+        var emptyReport = await client.GetFromJsonAsync<JsonElement>(
+            "/reports/ladies/daily?date=2000-01-01");
+
+        Assert.Equal(0,
+            emptyReport.GetProperty("ladyCount").GetInt32());
+
+        Assert.Equal(0,
+            emptyReport.GetProperty("ladies").GetArrayLength());
+
+        // 9. Invalid date formats are rejected.
+        var invalidResponse = await client.GetAsync(
+            "/reports/ladies/daily?date=invalid-date");
+
+        Assert.Equal(HttpStatusCode.BadRequest,
+            invalidResponse.StatusCode);
+
+        // 10. Missing dates are also rejected.
+        var missingDateResponse = await client.GetAsync(
+            "/reports/ladies/daily");
+
+        Assert.Equal(HttpStatusCode.BadRequest,
+            missingDateResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task DailyReport_GroupsReceiptsAndFiltersBusinessDate()
+    {
+        using var factory = new InventoryApiFactory();
+        using var client = factory.CreateClient();
+
+        await factory.InitializeDatabaseAsync();
+
+        var reportDate = new DateOnly(2026, 11, 8);
+        var previousDate = new DateOnly(2026, 11, 7);
+
+        // Arrange: create historical reporting records.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider
+                .GetRequiredService<InventoryDbContext>();
+
+            // Receipt 1: November 8, 3:30 AM Singapore.
+            var firstSale = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 11, 7, 19, 30, 0,
+                    DateTimeKind.Utc),
+
+                BusinessDate = reportDate,
+
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = "Hana",
+                    AllocatedEligibleSales = 100m,
+                    AllocatedBottleCost = 40m,
+                    AllocatedBack = 9m
+                },
+                new()
+                {
+                    Position = 2,
+                    LadyNameSnapshot = "Yuna",
+                    AllocatedEligibleSales = 200m,
+                    AllocatedBottleCost = 60m,
+                    AllocatedBack = 21m
+                }
+            }
+            };
+
+            // Receipt 2: November 8, 4:30 AM Singapore.
+            var secondSale = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 11, 7, 20, 30, 0,
+                    DateTimeKind.Utc),
+
+                BusinessDate = reportDate,
+
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = " hana ",
+                    AllocatedEligibleSales = 50m,
+                    AllocatedBottleCost = 10m,
+                    AllocatedBack = 2m
+                }
+            }
+            };
+
+            // Receipt 3: November 8, 2:30 AM Singapore.
+            // This belongs to the PREVIOUS business date.
+            var previousDaySale = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 11, 7, 18, 30, 0,
+                    DateTimeKind.Utc),
+
+                BusinessDate = previousDate,
+
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = "Hana",
+                    AllocatedEligibleSales = 500m,
+                    AllocatedBottleCost = 150m,
+                    AllocatedBack = 30m
+                }
+            }
+            };
+
+            // Receipt 4: No lady allocations.
+            // Should not affect the ladies' summary.
+            var unallocatedSale = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 11, 7, 21, 0, 0,
+                    DateTimeKind.Utc),
+
+                BusinessDate = reportDate
+            };
+
+            db.Sales.AddRange(
+                firstSale,
+                secondSale,
+                previousDaySale,
+                unallocatedSale);
+
+            await db.SaveChangesAsync();
+        }
+
+        // Act: request the November 8 daily report.
+        var response = await client.GetAsync(
+            "/reports/ladies/daily?date=2026-11-08");
+
+        Assert.Equal(HttpStatusCode.OK,
+            response.StatusCode);
+
+        var report = await response.Content
+            .ReadFromJsonAsync<JsonElement>();
+
+        // One row per lady.
+        Assert.Equal(2,
+            report.GetProperty("ladyCount").GetInt32());
+
+        var ladies = report.GetProperty("ladies")
+            .EnumerateArray()
+            .ToList();
+
+        Assert.Equal(2, ladies.Count);
+
+        // Sales are sorted highest first.
+        Assert.Equal("Yuna",
+            ladies[0].GetProperty("lady").GetString());
+
+        Assert.Equal("Hana",
+            ladies[1].GetProperty("lady").GetString());
+
+        // Hana's two November 8 allocations are combined.
+        var hana = ladies[1];
+
+        Assert.Equal(150m,
+            hana.GetProperty("sales").GetDecimal());
+
+        Assert.Equal(50m,
+            hana.GetProperty("totalBottleCost").GetDecimal());
+
+        Assert.Equal(100m,
+            hana.GetProperty("netSales").GetDecimal());
+
+        Assert.Equal(11m,
+            hana.GetProperty("back").GetDecimal());
+
+        // Verify the November 8 report totals.
+        var totals = report.GetProperty("totals");
+
+        Assert.Equal(350m,
+            totals.GetProperty("sales").GetDecimal());
+
+        Assert.Equal(110m,
+            totals.GetProperty("totalBottleCost").GetDecimal());
+
+        Assert.Equal(240m,
+            totals.GetProperty("netSales").GetDecimal());
+
+        Assert.Equal(32m,
+            totals.GetProperty("back").GetDecimal());
+
+        // Verify the previous business date separately.
+        var previousReport =
+            await client.GetFromJsonAsync<JsonElement>(
+                "/reports/ladies/daily?date=2026-11-07");
+
+        Assert.Equal(1,
+            previousReport.GetProperty("ladyCount").GetInt32());
+
+        Assert.Equal(500m,
+            previousReport.GetProperty("totals")
+                .GetProperty("sales").GetDecimal());
+
+        Assert.Equal(30m,
+            previousReport.GetProperty("totals")
+                .GetProperty("back").GetDecimal());
+    }
+
+    [Fact]
+    public async Task MonthlyReport_CombinesSalesAndFiltersSelectedMonth()
+    {
+        using var factory = new InventoryApiFactory();
+        using var client = factory.CreateClient();
+
+        await factory.InitializeDatabaseAsync();
+
+        // 1. Insert historical sales directly into
+        // the isolated test database.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider
+                .GetRequiredService<InventoryDbContext>();
+
+            // September sale: must be excluded.
+            var septemberSale = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 9, 30, 4, 0, 0, DateTimeKind.Utc),
+                BusinessDate = new DateOnly(2026, 9, 30),
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = "Hana",
+                    AllocatedEligibleSales = 600m,
+                    AllocatedBottleCost = 80m,
+                    AllocatedBack = 30m
+                }
+            }
+            };
+
+            // First October receipt: Hana.
+            var octoberSale1 = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 10, 1, 4, 0, 0, DateTimeKind.Utc),
+                BusinessDate = new DateOnly(2026, 10, 1),
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = "Hana",
+                    AllocatedEligibleSales = 100m,
+                    AllocatedBottleCost = 30m,
+                    AllocatedBack = 7m
+                }
+            }
+            };
+
+            // Second October receipt: Hana and Yuna.
+            var octoberSale2 = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 10, 31, 4, 0, 0, DateTimeKind.Utc),
+                BusinessDate = new DateOnly(2026, 10, 31),
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = " hana ",
+                    AllocatedEligibleSales = 50m,
+                    AllocatedBottleCost = 10m,
+                    AllocatedBack = 2m
+                },
+                new()
+                {
+                    Position = 2,
+                    LadyNameSnapshot = "Yuna",
+                    AllocatedEligibleSales = 200m,
+                    AllocatedBottleCost = 60m,
+                    AllocatedBack = 21m
+                }
+            }
+            };
+
+            // November sale: must be excluded.
+            var novemberSale = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 11, 1, 4, 0, 0, DateTimeKind.Utc),
+                BusinessDate = new DateOnly(2026, 11, 1),
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = "Yuna",
+                    AllocatedEligibleSales = 800m,
+                    AllocatedBottleCost = 100m,
+                    AllocatedBack = 60m
+                }
+            }
+            };
+
+            db.Sales.AddRange(
+                septemberSale,
+                octoberSale1,
+                octoberSale2,
+                novemberSale);
+
+            await db.SaveChangesAsync();
+        }
+
+        // 2. Request October's monthly report.
+        var response = await client.GetAsync(
+            "/reports/ladies/monthly?year=2026&month=10");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var report = await response.Content
+            .ReadFromJsonAsync<JsonElement>();
+
+        // 3. Verify the reporting period.
+        Assert.Equal(2026,
+            report.GetProperty("year").GetInt32());
+
+        Assert.Equal(10,
+            report.GetProperty("month").GetInt32());
+
+        Assert.Equal("2026-10-01",
+            report.GetProperty("periodStart").GetString());
+
+        Assert.Equal("2026-10-31",
+            report.GetProperty("periodEnd").GetString());
+
+        // 4. Verify exactly two ladies.
+        Assert.Equal(2,
+            report.GetProperty("ladyCount").GetInt32());
+
+        var ladies = report.GetProperty("ladies")
+            .EnumerateArray()
+            .ToList();
+
+        Assert.Equal(2, ladies.Count);
+
+        // Highest-selling lady comes first.
+        Assert.Equal("Yuna",
+            ladies[0].GetProperty("lady").GetString());
+
+        Assert.Equal("Hana",
+            ladies[1].GetProperty("lady").GetString());
+
+        // 5. Verify Yuna's October totals.
+        var yuna = ladies[0];
+
+        Assert.Equal(200m,
+            yuna.GetProperty("sales").GetDecimal());
+
+        Assert.Equal(60m,
+            yuna.GetProperty("totalBottleCost").GetDecimal());
+
+        Assert.Equal(140m,
+            yuna.GetProperty("netSales").GetDecimal());
+
+        Assert.Equal(21m,
+            yuna.GetProperty("back").GetDecimal());
+
+        // 6. Verify Hana's two receipts are combined.
+        var hana = ladies[1];
+
+        Assert.Equal(150m,
+            hana.GetProperty("sales").GetDecimal());
+
+        Assert.Equal(40m,
+            hana.GetProperty("totalBottleCost").GetDecimal());
+
+        Assert.Equal(110m,
+            hana.GetProperty("netSales").GetDecimal());
+
+        Assert.Equal(9m,
+            hana.GetProperty("back").GetDecimal());
+
+        // 7. Verify full October totals.
+        var totals = report.GetProperty("totals");
+
+        Assert.Equal(350m,
+            totals.GetProperty("sales").GetDecimal());
+
+        Assert.Equal(100m,
+            totals.GetProperty("totalBottleCost").GetDecimal());
+
+        Assert.Equal(250m,
+            totals.GetProperty("netSales").GetDecimal());
+
+        Assert.Equal(30m,
+            totals.GetProperty("back").GetDecimal());
+
+        // 8. Check a different month is separated.
+        var novemberReport =
+            await client.GetFromJsonAsync<JsonElement>(
+                "/reports/ladies/monthly?year=2026&month=11");
+
+        Assert.Equal(800m,
+            novemberReport.GetProperty("totals")
+                .GetProperty("sales").GetDecimal());
+
+        // 9. Invalid and incomplete dates are rejected.
+        var invalidMonth = await client.GetAsync(
+            "/reports/ladies/monthly?year=2026&month=13");
+
+        Assert.Equal(HttpStatusCode.BadRequest,
+            invalidMonth.StatusCode);
+
+        var missingYear = await client.GetAsync(
+            "/reports/ladies/monthly?month=10");
+
+        Assert.Equal(HttpStatusCode.BadRequest,
+            missingYear.StatusCode);
+    }
+
+    [Fact]
+    public async Task PreviousMonthReport_ReturnsCompletedPeriod()
+    {
+        using var factory = new InventoryApiFactory();
+        using var client = factory.CreateClient();
+
+        await factory.InitializeDatabaseAsync();
+
+        // Request the automatic historical report.
+        var response = await client.GetAsync(
+            "/reports/ladies/previous-month");
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            response.StatusCode);
+
+        var report = await response.Content
+            .ReadFromJsonAsync<JsonElement>();
+
+        // Read the returned period.
+        var start = DateOnly.Parse(
+            report.GetProperty("periodStart").GetString()!);
+
+        var end = DateOnly.Parse(
+            report.GetProperty("periodEnd").GetString()!);
+
+        // The report starts on day 1.
+        Assert.Equal(1, start.Day);
+
+        // The report ends on the final day of that month.
+        Assert.Equal(
+            start.AddMonths(1).AddDays(-1),
+            end);
+
+        // Year and month match the reporting period.
+        Assert.Equal(
+            start.Year,
+            report.GetProperty("year").GetInt32());
+
+        Assert.Equal(
+            start.Month,
+            report.GetProperty("month").GetInt32());
+
+        // The isolated database contains no sales.
+        Assert.Equal(0,
+            report.GetProperty("ladyCount").GetInt32());
+
+        Assert.Equal(0,
+            report.GetProperty("ladies").GetArrayLength());
+
+        var totals = report.GetProperty("totals");
+
+        Assert.Equal(0m,
+            totals.GetProperty("sales").GetDecimal());
+
+        Assert.Equal(0m,
+            totals.GetProperty("totalBottleCost").GetDecimal());
+
+        Assert.Equal(0m,
+            totals.GetProperty("netSales").GetDecimal());
+
+        Assert.Equal(0m,
+            totals.GetProperty("back").GetDecimal());
+    }
+
+    [Fact]
+    public async Task MonthlyReport_EqualsCombinedDailyReports()
+    {
+        using var factory = new InventoryApiFactory();
+        using var client = factory.CreateClient();
+
+        await factory.InitializeDatabaseAsync();
+
+        // Create fixed historical data.
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider
+                .GetRequiredService<InventoryDbContext>();
+
+            var october5 = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 10, 5, 12, 0, 0,
+                    DateTimeKind.Utc),
+
+                BusinessDate = new DateOnly(2026, 10, 5),
+
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = "Hana",
+                    AllocatedEligibleSales = 100.01m,
+                    AllocatedBottleCost = 40m,
+                    AllocatedBack = 9.0015m
+                }
+            }
+            };
+
+            var october6 = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 10, 6, 12, 0, 0,
+                    DateTimeKind.Utc),
+
+                BusinessDate = new DateOnly(2026, 10, 6),
+
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = "Hana",
+                    AllocatedEligibleSales = 50m,
+                    AllocatedBottleCost = 20m,
+                    AllocatedBack = 4.5m
+                },
+                new()
+                {
+                    Position = 2,
+                    LadyNameSnapshot = "Yuna",
+                    AllocatedEligibleSales = 60m,
+                    AllocatedBottleCost = 20m,
+                    AllocatedBack = 3m
+                }
+            }
+            };
+
+            // This sale must not appear in October.
+            var november1 = new Sale
+            {
+                SoldAtUtc = new DateTime(
+                    2026, 11, 1, 12, 0, 0,
+                    DateTimeKind.Utc),
+
+                BusinessDate = new DateOnly(2026, 11, 1),
+
+                Allocations = new List<SaleAllocation>
+            {
+                new()
+                {
+                    Position = 1,
+                    LadyNameSnapshot = "Hana",
+                    AllocatedEligibleSales = 1000m,
+                    AllocatedBottleCost = 300m,
+                    AllocatedBack = 50m
+                }
+            }
+            };
+
+            db.Sales.AddRange(
+                october5,
+                october6,
+                november1);
+
+            await db.SaveChangesAsync();
+        }
+
+        // Retrieve both October daily reports.
+        var day1 = await client.GetFromJsonAsync<JsonElement>(
+            "/reports/ladies/daily?date=2026-10-05");
+
+        var day2 = await client.GetFromJsonAsync<JsonElement>(
+            "/reports/ladies/daily?date=2026-10-06");
+
+        // Retrieve the October monthly report.
+        var month = await client.GetFromJsonAsync<JsonElement>(
+            "/reports/ladies/monthly?year=2026&month=10");
+
+        var daily1 = day1.GetProperty("totals");
+        var daily2 = day2.GetProperty("totals");
+        var monthly = month.GetProperty("totals");
+
+        // Revenue must reconcile.
+        Assert.Equal(
+            daily1.GetProperty("sales").GetDecimal()
+                + daily2.GetProperty("sales").GetDecimal(),
+            monthly.GetProperty("sales").GetDecimal());
+
+        // Bottle costs must reconcile.
+        Assert.Equal(
+            daily1.GetProperty("totalBottleCost").GetDecimal()
+                + daily2.GetProperty("totalBottleCost").GetDecimal(),
+            monthly.GetProperty("totalBottleCost").GetDecimal());
+
+        // Net sales must reconcile.
+        Assert.Equal(
+            daily1.GetProperty("netSales").GetDecimal()
+                + daily2.GetProperty("netSales").GetDecimal(),
+            monthly.GetProperty("netSales").GetDecimal());
+
+        // BACK must reconcile.
+        Assert.Equal(
+            daily1.GetProperty("back").GetDecimal()
+                + daily2.GetProperty("back").GetDecimal(),
+            monthly.GetProperty("back").GetDecimal());
+
+        // Verify exact expected monthly totals.
+        Assert.Equal(210.01m,
+            monthly.GetProperty("sales").GetDecimal());
+
+        Assert.Equal(80m,
+            monthly.GetProperty("totalBottleCost").GetDecimal());
+
+        Assert.Equal(130.01m,
+            monthly.GetProperty("netSales").GetDecimal());
+
+        Assert.Equal(16.5015m,
+            monthly.GetProperty("back").GetDecimal());
+
+        // October contains exactly two ladies.
+        Assert.Equal(2,
+            month.GetProperty("ladyCount").GetInt32());
+    }
 }
+

@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using InventoryApi.Data;
 using InventoryApi.Models;
 using InventoryApi.Services;
+using System.Globalization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -1205,6 +1206,177 @@ app.MapGet("/sales/{id:int}",
     }).ToList(),
 
         Items = sale.Items.OrderBy(i => i.Id).ToList()
+    });
+});
+
+// Day 4: Daily ladies' sales report.
+app.MapGet("/reports/ladies/daily",
+    async (string? date, InventoryDbContext db) =>
+{
+    // 1. Require a valid YYYY-MM-DD date.
+    if (string.IsNullOrWhiteSpace(date) ||
+        !DateOnly.TryParseExact(
+            date,
+            "yyyy-MM-dd",
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.None,
+            out var businessDate))
+    {
+        return Results.BadRequest(new
+        {
+            Message = "Date must use YYYY-MM-DD format."
+        });
+    }
+
+    // 2. Load historical allocations for this business date.
+    var allocations = await db.SaleAllocations
+        .AsNoTracking()
+        .Where(a => a.Sale.BusinessDate == businessDate)
+        .ToListAsync();
+
+    // 3. Group allocations and calculate each lady's totals.
+    var ladies = LadyDailySummaryCalculator.Calculate(
+        allocations);
+
+    // 4. Calculate report totals.
+    decimal totalSales = ladies.Sum(l => l.Sales);
+
+    decimal totalBottleCost = ladies.Sum(l =>
+        l.TotalBottleCost);
+
+    decimal totalNetSales = ladies.Sum(l =>
+        l.NetSales);
+
+    decimal totalBack = ladies.Sum(l => l.Back);
+
+    // 5. Return the daily report.
+    return Results.Ok(new
+    {
+        BusinessDate = businessDate,
+        LadyCount = ladies.Count,
+
+        Totals = new
+        {
+            Sales = totalSales,
+            TotalBottleCost = totalBottleCost,
+            NetSales = totalNetSales,
+            Back = totalBack
+        },
+
+        Ladies = ladies
+    });
+});
+
+// Day 4: Monthly ladies' sales report.
+app.MapGet("/reports/ladies/monthly",
+    async (int? year, int? month, InventoryDbContext db) =>
+{
+    // 1. Validate the requested year and month.
+    if (year is null || month is null ||
+        year < 1 || year > 9999 ||
+        month < 1 || month > 12)
+    {
+        return Results.BadRequest(new
+        {
+            Message =
+                "A valid year (1-9999) and month (1-12) are required."
+        });
+    }
+
+    // 2. Calculate the first and last business dates.
+    var startDate = new DateOnly(
+        year.Value, month.Value, 1);
+
+    var endDate = new DateOnly(
+        year.Value,
+        month.Value,
+        DateTime.DaysInMonth(year.Value, month.Value));
+
+    // 3. Load allocations within the selected month.
+    var allocations = await db.SaleAllocations
+        .AsNoTracking()
+        .Where(a =>
+            a.Sale.BusinessDate >= startDate &&
+            a.Sale.BusinessDate <= endDate)
+        .ToListAsync();
+
+    // 4. Reuse our existing summary calculator.
+    var ladies =
+        LadyDailySummaryCalculator.Calculate(allocations);
+
+    // 5. Calculate the combined report totals.
+    decimal totalSales = ladies.Sum(l => l.Sales);
+
+    decimal totalBottleCost = ladies.Sum(l =>
+        l.TotalBottleCost);
+
+    decimal totalNetSales = ladies.Sum(l =>
+        l.NetSales);
+
+    decimal totalBack = ladies.Sum(l => l.Back);
+
+    // 6. Return the monthly report.
+    return Results.Ok(new
+    {
+        Year = year.Value,
+        Month = month.Value,
+        PeriodStart = startDate,
+        PeriodEnd = endDate,
+        LadyCount = ladies.Count,
+
+        Totals = new
+        {
+            Sales = totalSales,
+            TotalBottleCost = totalBottleCost,
+            NetSales = totalNetSales,
+            Back = totalBack
+        },
+
+        Ladies = ladies
+    });
+});
+
+// Day 4: Previous completed business month's ladies report.
+app.MapGet("/reports/ladies/previous-month",
+    async (InventoryDbContext db) =>
+{
+    // 1. Determine the most recently completed
+    // business month using the Singapore 3 AM cutoff.
+    var (startDate, endDate) =
+        PreviousCompletedMonthCalculator.GetPeriod(
+            DateTime.UtcNow);
+
+    // 2. Retrieve historical allocations.
+    var allocations = await db.SaleAllocations
+        .AsNoTracking()
+        .Where(a =>
+            a.Sale.BusinessDate >= startDate &&
+            a.Sale.BusinessDate <= endDate)
+        .ToListAsync();
+
+    // 3. Reuse the existing reporting calculator.
+    var ladies =
+        LadyDailySummaryCalculator.Calculate(allocations);
+
+    // 4. Return the completed month's report.
+    return Results.Ok(new
+    {
+        Year = startDate.Year,
+        Month = startDate.Month,
+        PeriodStart = startDate,
+        PeriodEnd = endDate,
+        LadyCount = ladies.Count,
+
+        Totals = new
+        {
+            Sales = ladies.Sum(l => l.Sales),
+            TotalBottleCost = ladies.Sum(l =>
+                l.TotalBottleCost),
+            NetSales = ladies.Sum(l => l.NetSales),
+            Back = ladies.Sum(l => l.Back)
+        },
+
+        Ladies = ladies
     });
 });
 

@@ -2,9 +2,9 @@
 
 A RESTful inventory and sales management API built with **C#**, **ASP.NET Core Minimal APIs (.NET 10)**, **Entity Framework Core**, and **SQLite**.
 
-This developer portfolio project covers product management, inventory movements, auditable reversals, transactional sales, historical financial snapshots, category-based BACK calculations, daily receipt numbering, and staff sales allocations. The focus is on backend business rules, data integrity, transaction safety, and automated testing.
+This developer portfolio project covers product management, inventory movements, auditable reversals, transactional sales, historical financial snapshots, category-based BACK calculations, automatic receipt numbering, staff sales allocation, and historical sales reporting. It focuses on backend business rules, data integrity, transaction safety, and automated testing.
 
-> **Project status:** Active development. **Day 1, Day 2, and Day 3 completed.** Latest local verification: **45 tests passed, 0 failed**.
+> **Project status:** Active development. **Day 1–Day 4 completed.** The Day 4 test target is **58 passing tests**; confirm the latest count with `dotnet test InventoryApi.sln`.
 
 ## Tech Stack
 
@@ -24,7 +24,7 @@ This developer portfolio project covers product management, inventory movements,
 ### Product Management
 
 - Create, retrieve, and update products.
-- Delete products only when they have no movement history.
+- Delete products only when they have no stock movement history.
 - Validate product names, categories, purchase costs, and selling prices.
 - Store product records in SQLite with database-generated IDs.
 
@@ -34,17 +34,17 @@ This developer portfolio project covers product management, inventory movements,
 - Record stock receipts, transfers, and issues with UTC timestamps and optional references.
 - Calculate balances from incoming and outgoing stock movements.
 - Reject movements that would leave insufficient stock at the source location.
-- Calculate **usable stock** from **Store** and **Wine Chiller** only.
+- Count only **Store** and **Wine Chiller** toward usable stock.
 
 **Total stock** = Store + Locker + Office + Wine Chiller  
 **Usable stock** = Store + Wine Chiller
 
 ### Stock Movement Reversals
 
-- Correct a stock movement with a linked compensating movement instead of deleting history.
+- Correct a movement with a linked compensating movement instead of deleting history.
 - Require a reversal reason of 1–200 characters.
 - Prevent duplicate reversals and reversals of reversals.
-- Check available stock before recording a reversal that removes inventory.
+- Check stock availability before a reversal that removes inventory.
 - Prevent direct reversal of stock movements linked to sales.
 - Use database uniqueness constraints to protect reversal integrity.
 
@@ -52,50 +52,64 @@ This developer portfolio project covers product management, inventory movements,
 
 - Create multi-item sales and deduct stock automatically from usable locations.
 - Validate combined quantities across duplicate sale lines to prevent overselling.
-- Save sale headers, sale items, and stock movements atomically in a SQLite transaction.
-- Capture historical product name, category, unit selling price, and unit purchase cost for each sale item.
-- Calculate total revenue, total purchase cost, and gross profit.
-- Preserve historical receipt values when current product details change.
-- Record a UTC timestamp and the corresponding **Singapore business date**, using a **3 AM Singapore time cutoff**.
+- Save sale headers, items, and stock movements atomically in a SQLite transaction.
+- Capture historical product names, categories, selling prices, and purchase costs.
+- Calculate total revenue, total cost, and gross profit.
+- Preserve receipt values when product details change later.
+- Record sale timestamps in UTC and a **Singapore business date with a 3 AM cutoff**.
 
 ### BACK Calculation
 
-- Calculate BACK using **(unit selling price − unit purchase cost) × quantity × 15%**.
+- Calculate BACK as **(unit selling price − unit purchase cost) × quantity × 15%** for eligible categories.
 - Eligible categories: **Champagne, Red Wine, White Wine, Red & White Wine, Tequila, and Sake**.
 - Other categories, including a product labelled only `Wine`, currently calculate zero BACK.
-- Save category and BACK snapshots on each sale item so historical BACK does not change when a product is edited.
+- Save historical category and BACK values on each sale item.
 - Include item-level `backAmount` and receipt-level `totalBack` in sales responses.
-- Keep BACK separate from gross profit and allocated net sales.
+- Track BACK separately from gross profit and allocated net sales.
 
 ### Receipt Numbering
 
-- Generate receipt numbers in the format `YYYYMMDD-001`, `YYYYMMDD-002`, and so on.
-- Use the **3 AM Singapore business-day cutoff** for the date portion.
-- Restart the sequence at `001` for each business date.
-- Store the receipt number and daily sequence on the sale.
-- Use unique database indexes on receipt number and `(BusinessDate, ReceiptSequence)`.
-- Generate receipt numbers inside the sales transaction; a rejected sale does not keep a receipt number.
-- Support concurrency safely: a contested request may return HTTP 503 rather than commit a duplicate receipt.
+- Generate `YYYYMMDD-001`, `YYYYMMDD-002`, and subsequent receipt numbers.
+- Use the **3 AM Singapore business-day cutoff** for the date prefix.
+- Restart sequences at `001` for each business date.
+- Store receipt number and sequence on the sale.
+- Enforce unique indexes on receipt number and `(BusinessDate, ReceiptSequence)`.
+- Generate numbers inside the sale transaction; rejected sales do not retain receipt numbers.
+- During SQLite write contention, one request may return HTTP 503 rather than commit a duplicate receipt.
 
 ### Sales Allocation (Up to Eight Ladies)
 
-- Optionally attach **0–8 unique lady names** to a receipt.
-- Accept an optional, nonnegative `excludedAmount` that cannot exceed the sale's revenue.
+- Assign **zero to eight unique lady names** to a receipt.
+- Accept an optional, nonnegative `excludedAmount` that cannot exceed revenue.
 - Calculate **eligible sales = total revenue − excluded amount**.
-- Divide eligible sales, total bottle costs, and BACK equally among assigned ladies.
-- Preserve cent-level sales/cost totals and four-decimal BACK totals by distributing rounding remainders.
-- Save each allocation with its position and name snapshot.
-- Calculate each allocated **net sales = allocated eligible sales − allocated bottle cost**.
-- Do **not** create extra stock movements or duplicate revenue when a receipt has multiple allocations.
-- Allow receipts with no ladies assigned; their allocation list is empty.
+- Split eligible sales, total bottle costs, and BACK equally among assigned ladies.
+- Distribute rounding remainders so sales/cost totals reconcile to cents and BACK totals to four decimal places.
+- Preserve each lady's name snapshot, position, and allocated amounts.
+- Calculate **net sales = allocated eligible sales − allocated bottle cost**.
+- Avoid creating additional stock movements or duplicating revenue when multiple ladies share a receipt.
+- Allow receipts without any lady allocations.
+
+### Historical Ladies' Sales Reporting (Day 4)
+
+- **Daily report:** Group allocations across receipts for a selected Singapore business date.
+- **Monthly report:** Aggregate allocations for a selected year and month.
+- **Previous completed month:** Automatically choose the latest fully completed business month using the 3 AM Singapore cutoff.
+- Group names case-insensitively (for example, `Hana` and `hana`).
+- Sort ladies by allocated sales, highest first.
+- Return each lady's allocated sales, bottle costs, net sales, and BACK, plus summary totals.
+- Reuse the same summary calculator for daily and monthly results.
+- Calculate reports from **stored historical allocations**, not current product prices.
+- Test monthly totals against the sum of daily totals.
+
+> **Reporting scope:** These endpoints report **allocated ladies' performance**, not total store revenue. Receipts without assigned ladies do not contribute to ladies' report totals.
 
 ### Transaction Safety and Audit Integrity
 
 - Use serializable SQLite transactions for operations that check and change stock.
 - Return HTTP 503 for database busy/locked conditions that cannot be resolved.
-- Roll back sale, stock movement, and allocation records together when a sale fails.
-- Preserve references between sale items and their stock movement records.
-- Protect products with stock history from deletion.
+- Roll back sales, stock movements, and allocations together when a sale fails.
+- Preserve references between sale items and their stock movements.
+- Protect products with inventory history from deletion.
 
 ## API Endpoints
 
@@ -122,20 +136,28 @@ This developer portfolio project covers product management, inventory movements,
 | Method | Endpoint                        | Description                                 |
 | ------ | ------------------------------- | ------------------------------------------- |
 | GET    | `/locations`                    | List seeded locations                       |
-| GET    | `/products/{id}/stock`          | Stock totals and balances by location       |
+| GET    | `/products/{id}/stock`          | Stock balances by location                  |
 | GET    | `/stock-movements`              | List movements; optional `productId` filter |
 | GET    | `/stock-movements/{id}`         | Get one movement                            |
 | POST   | `/stock-movements`              | Receive, transfer, or issue stock           |
 | POST   | `/stock-movements/{id}/reverse` | Create an audited reversal                  |
 
-### Sales
+### Sales and Historical Receipts
 
-| Method | Endpoint      | Description                                                                          |
-| ------ | ------------- | ------------------------------------------------------------------------------------ |
-| POST   | `/sales`      | Create sale, deduct stock, calculate BACK, assign receipt number, and allocate sales |
-| GET    | `/sales/{id}` | Retrieve historical receipt, financial totals, BACK, and allocations                 |
+| Method | Endpoint      | Description                                                                              |
+| ------ | ------------- | ---------------------------------------------------------------------------------------- |
+| POST   | `/sales`      | Create a sale, deduct stock, calculate BACK, assign a receipt number, and allocate sales |
+| GET    | `/sales/{id}` | Retrieve a historical receipt with financial totals, BACK, and allocations               |
 
-The API returns standard HTTP status codes such as **201 Created**, **204 No Content**, **400 Bad Request**, **404 Not Found**, **409 Conflict**, and **503 Service Unavailable** where applicable.
+### Ladies' Sales Reporting
+
+| Method | Endpoint                                    | Description                                    |
+| ------ | ------------------------------------------- | ---------------------------------------------- |
+| GET    | `/reports/ladies/daily?date=YYYY-MM-DD`     | Daily report for a business date               |
+| GET    | `/reports/ladies/monthly?year=YYYY&month=M` | Historical report for a selected month         |
+| GET    | `/reports/ladies/previous-month`            | Report for the latest completed business month |
+
+The API uses HTTP responses including **201 Created**, **204 No Content**, **400 Bad Request**, **404 Not Found**, **409 Conflict**, and **503 Service Unavailable** as applicable.
 
 ## Business Rules
 
@@ -148,6 +170,7 @@ The API returns standard HTTP status codes such as **201 Created**, **204 No Con
 | Eligible sales                  | Total revenue − excluded amount                                           |
 | Per-lady net sales              | Allocated eligible sales − allocated bottle cost                          |
 | Business date                   | Singapore local date, with sales before 3 AM assigned to the previous day |
+| Daily/monthly ladies' sales     | Sum of allocated eligible sales for the selected business date(s)         |
 
 BACK is recorded separately; it is **not subtracted from net sales**.
 
@@ -159,7 +182,7 @@ BACK is recorded separately; it is **not subtracted from net sales**.
 - Git
 - EF Core CLI (`dotnet-ef`) compatible with EF Core 10
 
-Install the EF Core CLI if needed:
+If needed, install the EF Core CLI version matching the project's EF Core packages:
 
 ```powershell
 dotnet tool install --global dotnet-ef --version 10.0.14
@@ -239,7 +262,7 @@ The response contains the new product ID. Use the returned ID in later requests.
 }
 ```
 
-Assuming no earlier movements, this leaves 10 total units, including 7 usable units in Store and 3 non-usable units in Locker.
+Assuming no earlier movements, this leaves 10 total units: 7 usable units in Store and 3 units in Locker.
 
 ### Reverse a stock movement
 
@@ -251,7 +274,7 @@ Assuming no earlier movements, this leaves 10 total units, including 7 usable un
 }
 ```
 
-Replace example product and movement IDs with the IDs returned by your own database.
+Replace example product and movement IDs with those returned by your own API.
 
 ### Create a sale with allocations
 
@@ -276,9 +299,9 @@ Replace example product and movement IDs with the IDs returned by your own datab
 }
 ```
 
-`excludedAmount` and `ladyNames` are optional. The sale requires real products and sufficient stock at the requested locations.
+`excludedAmount` and `ladyNames` are optional. The sale requires existing products and sufficient stock at the specified locations.
 
-**Illustrative result:** If product 1 is Champagne at S$180 selling price / S$75 cost and product 2 is a generic `Wine` product at S$80 selling price / S$30 cost:
+**Illustrative result:** If product 1 is Champagne at S$180 selling price / S$75 cost and product 2 is a generic `Wine` at S$80 selling price / S$30 cost:
 
 | Metric              |   Amount |
 | ------------------- | -------: |
@@ -289,16 +312,38 @@ Replace example product and movement IDs with the IDs returned by your own datab
 | Excluded amount     |  S$40.00 |
 | Eligible sales      | S$400.00 |
 
-Allocations in the example:
+| Allocation     |     Hana |     Yuna |
+| -------------- | -------: | -------: |
+| Eligible sales | S$200.00 | S$200.00 |
+| Bottle cost    |  S$90.00 |  S$90.00 |
+| Net sales      | S$110.00 | S$110.00 |
+| BACK           |  S$15.75 |  S$15.75 |
 
-| Metric                   |     Hana |     Yuna |
-| ------------------------ | -------: | -------: |
-| Allocated eligible sales | S$200.00 | S$200.00 |
-| Allocated bottle cost    |  S$90.00 |  S$90.00 |
-| Net sales                | S$110.00 | S$110.00 |
-| Allocated BACK           |  S$15.75 |  S$15.75 |
+The response includes the sale ID, UTC timestamp, Singapore business date, receipt number, historical item snapshots, financial totals, and allocations. Use **GET** `/sales/{id}` to retrieve the historical receipt.
 
-The response includes the generated sale ID, UTC timestamp, Singapore business date, receipt number, historical item snapshots, financial totals, and allocations. Use **GET** `/sales/{id}` to retrieve that historical receipt later.
+### Retrieve ladies' reports
+
+**Daily report:**
+
+```text
+GET /reports/ladies/daily?date=2026-11-08
+```
+
+**Selected monthly report:**
+
+```text
+GET /reports/ladies/monthly?year=2026&month=10
+```
+
+**Previous completed business month:**
+
+```text
+GET /reports/ladies/previous-month
+```
+
+A report returns its business date or period, the number of ladies, combined `totals`, and individual `ladies` rows with `sales`, `totalBottleCost`, `netSales`, and `back`.
+
+For example, on **December 1, 2026 at 2:59 AM Singapore time**, the latest completed business month is **October 2026**; at **3:00 AM**, it becomes **November 2026**.
 
 ## Automated Testing
 
@@ -310,23 +355,27 @@ Run the entire suite:
 dotnet test InventoryApi.sln
 ```
 
-Run a specific test class, for example:
+Run a specific test class:
 
 ```powershell
 dotnet test InventoryApi.sln --filter "FullyQualifiedName~SalesEndpointsTests"
 ```
 
-**Latest locally reported result: 45 tests passed, 0 failed, 0 skipped.**
+**Day 4 target: 58 passing tests, 0 failures, 0 skipped.** The latest full run explicitly reported in this conversation was 57 passing tests; the daily/monthly reconciliation test was added afterward and should bring the total to 58. Verify this before committing.
 
 Test coverage includes:
 
-- Product and inventory CRUD, location balances, validation, and reversal rules.
-- Concurrent inventory movements, duplicate reversals, and transaction contention.
+- Product and inventory workflows, stock balances, and reversal rules.
+- Concurrent inventory operations, duplicate reversal prevention, and transaction contention.
 - Multi-item sales, combined stock requirements, atomic rollback, and audit relationships.
 - Historical price, category, cost, and BACK snapshots.
-- Receipt numbers, business-day cutoff, and concurrent receipt uniqueness.
-- Two-lady and eight-lady allocations, rounding reconciliation, and saved historical allocations.
-- Invalid lady lists, zero-lady receipts, excluded amount validation, and rollback on failed allocations.
+- Receipt numbers, 3 AM business-day cutoff, and concurrent receipt uniqueness.
+- Two-lady and eight-lady allocations, rounding reconciliation, and historical allocations.
+- Invalid lady lists, zero-lady receipts, excluded amount validation, and rollback.
+- Daily summary grouping, case-insensitive names, and empty results.
+- Daily business-date filtering and selected-month boundaries.
+- Previous completed business-month selection, year-end, and leap-year boundaries.
+- Reconciliation between daily reports and monthly totals.
 
 ## Project Structure
 
@@ -341,11 +390,14 @@ InventoryApi/
 │   ├── Sale.cs
 │   ├── SaleItem.cs
 │   ├── SaleAllocation.cs
+│   ├── LadyDailySummaryRow.cs
 │   └── (request models)
 ├── Services/
 │   ├── BusinessDateCalculator.cs
 │   ├── BackCalculator.cs
-│   └── AllocationSplitter.cs
+│   ├── AllocationSplitter.cs
+│   ├── LadyDailySummaryCalculator.cs
+│   └── PreviousCompletedMonthCalculator.cs
 ├── Migrations/
 │   ├── (EF Core migration files)
 │   └── InventoryDbContextModelSnapshot.cs
@@ -355,9 +407,11 @@ InventoryApi/
 │       ├── InventoryEndpointsTests.cs
 │       ├── StockMovementReversalTests.cs
 │       ├── BusinessDateCalculatorTests.cs
+│       ├── BackCalculatorTests.cs
+│       ├── LadyDailySummaryCalculatorTests.cs
+│       ├── PreviousCompletedMonthCalculatorTests.cs
 │       ├── SalesEndpointsTests.cs
-│       ├── SalesReliabilityTests.cs
-│       └── BackCalculatorTests.cs
+│       └── SalesReliabilityTests.cs
 ├── Program.cs
 ├── InventoryApi.csproj
 ├── InventoryApi.sln
@@ -368,33 +422,38 @@ InventoryApi/
 
 ## Development Progress
 
-| Day   | Milestone                                                                                                                                                       | Status    |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
-| Day 1 | Project setup, products, EF Core/SQLite migrations, inventory locations, stock ledger, safe reversals, and integration tests                                    | Completed |
-| Day 2 | Sales models, multi-item sales, 3 AM business date, historical price snapshots, concurrency protection, rollback, and audit tests                               | Completed |
-| Day 3 | BACK calculation and historical snapshots, receipt numbers, equal sales allocation for up to eight ladies, rounding, validations, and receipt integration tests | Completed |
+| Day   | Milestone                                                                                                                                     | Status    |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Day 1 | Project setup, products, EF Core/SQLite migrations, inventory locations, stock ledger, safe reversals, and integration tests                  | Completed |
+| Day 2 | Sales models, multi-item sales, 3 AM business date, historical price snapshots, concurrency protection, rollback, and audit tests             | Completed |
+| Day 3 | BACK calculation and historical snapshots, receipt numbers, equal allocation for up to eight ladies, rounding, validations, and receipt tests | Completed |
+| Day 4 | Daily ladies' sales reporting                                                                                                                 | Completed |
+|       | Selected monthly historical reporting                                                                                                         | Completed |
+|       | Previous completed business-month reporting                                                                                                   | Completed |
+|       | Reporting calculators and automated tests                                                                                                     | Completed |
+|       | Daily/monthly financial reconciliation                                                                                                        | Completed |
 
 ## Current Limitations
 
 - No graphical frontend or user authentication/authorization.
-- Historical monthly reporting and analytics endpoints are not yet implemented.
-- No implemented sales cancellation/refund or full sales-correction workflow.
-- Product create/update endpoints do not yet consistently restrict prices to two decimal places; sales with staff allocations reject unsupported precision.
-- Existing sales created before some Day 3 migrations may have `null` historical BACK or receipt-number fields; no automatic backfill is documented.
-- Stock balances currently use movement history loaded into memory instead of database-side aggregation.
-- SQLite supports one active writer at a time; high contention can return HTTP 503.
+- Reporting covers allocated ladies' sales; it is not a full store revenue or general analytics dashboard.
+- No sales cancellation, refund, or full sales-correction workflow.
+- Product create/update endpoints do not consistently restrict prices to two decimal places; sales with staff allocations reject unsupported precision.
+- Historical sales created before Day 3 may have `null` BACK or receipt-number fields; no automatic backfill is implemented.
+- Stock balance calculations currently load movement history into memory instead of aggregating in SQL.
+- SQLite supports one active writer at a time; heavy contention can return HTTP 503.
 - No request idempotency keys for safely retrying potentially uncertain submissions.
 - No authenticated staff identity attached to inventory corrections.
-- No product archive / soft-delete workflow.
-- GitHub Actions continuous integration and deployment are not yet configured.
+- No product archiving / soft-delete workflow.
+- GitHub Actions CI and deployment are not yet configured.
 
 ## Planned Features
 
-- Historical business-day and previous-completed-month financial reports.
-- Sales corrections / voids with a complete audit trail.
+- Full store-level revenue and profitability reporting, separate from ladies' allocations.
+- Audited sales corrections, refunds, and voids.
 - Product archiving and consistent currency-precision validation.
 - Authentication and role-based authorization.
-- Request idempotency and more robust contention handling.
+- Request idempotency and stronger contention handling.
 - Database-side stock balance aggregation.
 - JavaScript frontend.
 - GitHub Actions CI and deployment.
